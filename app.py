@@ -7,11 +7,12 @@ from streamlit_folium import st_folium
 import time
 import math
 
-# --- CONFIG ---
+# --- 1. CONFIGURATIE ---
 st.set_page_config(page_title="Dropping 2026", layout="wide")
 FINISH_COORDS = [51.2435, 4.4452]
 START_PUNTEN = 1000.0
-TIJD_DOEL_UUR = 5
+# TEST-MODUS: We zetten de tijd op 1 uur voor snelle visuele afname
+TIJD_DOEL_UUR = 1 
 PUNTEN_PER_SEC = START_PUNTEN / (TIJD_DOEL_UUR * 3600)
 REFRESH_RATE = 10 
 
@@ -58,6 +59,8 @@ def save_df_to_db(df):
 # --- AUTH ---
 if 'logged_in' not in st.session_state:
     st.session_state.logged_in = False
+if 'alarm_acknowledged' not in st.session_state:
+    st.session_state.alarm_acknowledged = False
 
 if not st.session_state.logged_in:
     st.title("📍 Dropping 2026")
@@ -80,72 +83,88 @@ else:
         st.title("🕹️ Control Room")
         df = get_db_as_df()
         st.dataframe(df)
-        if not df.empty:
-            target = st.selectbox("Kies Team:", df['Teamnaam'].unique())
-            msg = st.text_area("Nieuwe Opdracht")
-            pts = st.number_input("Punten", value=50)
-            c1, c2 = st.columns(2)
-            with c1:
-                if st.button("Push Opdracht"):
-                    df.loc[df['Teamnaam'] == target, 'Alarm'] = f"{pts}|{msg}"
-                    save_df_to_db(df); st.success("Gezonden!")
-            with c2:
-                if st.button("Keur Goed & Tel Bij"):
-                    val = str(df.loc[df['Teamnaam'] == target, 'Alarm'].values[0])
-                    bonus = float(val.split('|')[0]) if '|' in val else 0
-                    df.loc[df['Teamnaam'] == target, 'Score'] += bonus
-                    df.loc[df['Teamnaam'] == target, 'Alarm'] = "GEEN"
-                    save_df_to_db(df); st.rerun()
-        
-        # Admin auto-refresh
+        target = st.selectbox("Kies Team:", df['Teamnaam'].unique())
+        msg = st.text_area("Opdracht")
+        pts = st.number_input("Punten", value=50)
+        if st.button("Push Opdracht"):
+            df.loc[df['Teamnaam'] == target, 'Alarm'] = f"{pts}|{msg}"
+            save_df_to_db(df); st.success("Gezonden!")
+        if st.button("Keur Goed & Tel Bij"):
+            val = str(df.loc[df['Teamnaam'] == target, 'Alarm'].values[0])
+            bonus = float(val.split('|')[0]) if '|' in val else 0
+            df.loc[df['Teamnaam'] == target, 'Score'] += bonus
+            df.loc[df['Teamnaam'] == target, 'Alarm'] = "GEEN"
+            save_df_to_db(df); st.rerun()
         st.components.v1.html(f"<script>setTimeout(function(){{ window.location.reload(); }}, 15000);</script>", height=0)
 
     # --- USER ---
     else:
         df = get_db_as_df()
         team_idx = df['Teamnaam'] == st.session_state.team
-        
-        # VEILIGHEIDSCHECK: Bestaat het team nog in de database?
         if not team_idx.any():
             st.session_state.logged_in = False
-            st.error("Team niet gevonden in database. Log opnieuw in.")
-            if st.button("Terug naar Login"): st.rerun()
-            st.stop()
-
+            st.rerun()
+        
         my_data = df[team_idx].iloc[0]
 
-        # JavaScript voor Auto-refresh
-        st.components.v1.html(f"<script>setTimeout(function(){{ window.location.reload(); }}, {REFRESH_RATE * 1000});</script>", height=0)
+        # AUTO-REFRESH & GPS SCRIPT
+        st.components.v1.html(f"""
+            <script>
+            setTimeout(function(){{ window.location.reload(); }}, {REFRESH_RATE * 1000});
+            </script>
+        """, height=0)
 
         # Score berekening
         if my_data['Fase'] == "DROPPING":
             nu = time.time()
             dt = nu - float(my_data['Last_Update'])
             dist = get_distance_to_line([my_data['Cur_Lat'], my_data['Cur_Lon']], [my_data['Start_Lat'], my_data['Start_Lon']], FINISH_COORDS)
-            straf = 1 + (dist * 4) 
+            straf = 1 + (dist * 5) # Straffactor verhoogd voor test
             nieuwe_score = max(0, float(my_data['Score']) - (dt * PUNTEN_PER_SEC * straf))
             df.loc[team_idx, 'Score'] = nieuwe_score
             df.loc[team_idx, 'Last_Update'] = nu
             save_df_to_db(df)
             my_data['Score'] = nieuwe_score
 
-        # UI
-        st.title(f"Team: {st.session_state.team}")
+        # UI HEADER
+        c1, c2 = st.columns([3, 1])
+        c1.title(f"Team: {st.session_state.team}")
+        c2.write(f"🔄 Sync in {REFRESH_RATE}s")
+        st.progress(1.0) # Visuele indicatie van tijd (optioneel)
 
+        # ALARM LOGICA
         if "|" in str(my_data['Alarm']):
             pts, txt = str(my_data['Alarm']).split("|")
-            st.markdown(f'<div style="background-color:#ff4b4b;padding:20px;border-radius:10px;text-align:center;animation:blinker 1.5s linear infinite;"><h1 style="color:white;">🚨 OPDRACHT ({pts} ptn)</h1><p style="color:white;font-size:20px;">{txt}</p></div><style>@keyframes blinker{{50%{{opacity:0.2;}}}}</style>', unsafe_allow_html=True)
-            st.stop()
+            if not st.session_state.alarm_acknowledged:
+                st.markdown(f"""
+                    <div style="background-color:#ff4b4b;padding:20px;border-radius:10px;text-align:center;animation:blinker 1s linear infinite;cursor:pointer;">
+                        <h2 style="color:white;">🚨 NIEUWE OPDRACHT (+{pts} ptn)</h2>
+                        <p style="color:white;font-size:18px;">{txt}</p>
+                        <p style="color:white;font-size:12px;">(Klik op de knop hieronder om de kaart te zien)</p>
+                    </div>
+                    <style>@keyframes blinker{{50%{{opacity:0.3;}}}}</style>
+                """, unsafe_allow_html=True)
+                if st.button("GELEZEN - TOON KAART"):
+                    st.session_state.alarm_acknowledged = True
+                    st.rerun()
+                st.stop()
+            else:
+                st.info(f"📌 Huidige Opdracht: {txt} (+{pts} ptn)")
+                if st.button("Toon Alarm opnieuw"):
+                    st.session_state.alarm_acknowledged = False
+                    st.rerun()
+        else:
+            st.session_state.alarm_acknowledged = False
 
-        st.header(f"🏆 Score: {int(my_data['Score'])} pnt")
+        st.subheader(f"🏆 Score: {int(my_data['Score'])}")
 
         if my_data['Fase'] == "LOCATIE_KIEZEN":
-            st.info("Kies je startlocatie.")
+            st.info("Kies je dropping-locatie op de kaart.")
             m = folium.Map(location=[51.2, 4.4], zoom_start=12)
             st_data = st_folium(m, width=700, height=400, key="start_map")
             if st_data and st_data.get("last_clicked"):
                 clicked = st_data["last_clicked"]
-                if st.button("BEVESTIG START"):
+                if st.button("BEVESTIG STARTPUNT"):
                     df.loc[team_idx, 'Start_Lat'] = clicked['lat']
                     df.loc[team_idx, 'Start_Lon'] = clicked['lng']
                     df.loc[team_idx, 'Cur_Lat'] = clicked['lat']
@@ -154,11 +173,20 @@ else:
                     df.loc[team_idx, 'Last_Update'] = time.time()
                     save_df_to_db(df); st.rerun()
         else:
+            # KAART MET HUIDIGE LOCATIE (Cur_Lat/Lon)
             start = [my_data['Start_Lat'], my_data['Start_Lon']]
-            m = folium.Map(location=start, zoom_start=14)
-            folium.Marker(start, tooltip="Start").add_to(m)
-            folium.Marker(FINISH_COORDS, icon=folium.Icon(color='red')).add_to(m)
-            folium.PolyLine([start, FINISH_COORDS], color="green", dash_array='10').add_to(m)
+            current = [my_data['Cur_Lat'], my_data['Cur_Lon']]
+            
+            m = folium.Map(location=current, zoom_start=15)
+            folium.Marker(start, tooltip="Start", icon=folium.Icon(color='gray')).add_to(m)
+            folium.Marker(FINISH_COORDS, icon=folium.Icon(color='red', icon='flag')).add_to(m)
+            folium.PolyLine([start, FINISH_COORDS], color="green", weight=2, dash_array='5').add_to(m)
+            
+            # De "Live" locatie van het team
+            folium.Marker(current, tooltip="Jullie zijn hier", icon=folium.Icon(color='blue', icon='info-sign')).add_to(m)
+            # Voeg een cirkel toe om de huidige locatie te benadrukken
+            folium.Circle(current, radius=50, color='blue', fill=True, opacity=0.3).add_to(m)
+            
             st_folium(m, width=700, height=500)
 
         if st.button("Log uit"):
