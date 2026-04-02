@@ -1,0 +1,162 @@
+import streamlit as st
+import pandas as pd
+import folium
+from streamlit_folium import st_folium
+from math import radians, cos, sin, asin, sqrt
+import datetime
+import time
+
+# --- 1. CONFIGURATIE & LOCATIES ---
+st.set_page_config(page_title="Rechtdoor! Challenge", page_icon="📏", layout="wide")
+
+# JC Bouckenborgh (Finish)
+FINISH = (51.2453, 4.4534) 
+
+# Startpunten (Droppunten)
+START_OPTIONS = {
+    "Team Kalmthout": (51.3789, 4.4715), # Station Kijkuit
+    "Team Malle": (51.2435, 4.7219)     # Vliegveld Malle
+}
+
+# --- 2. HULPFUNCTIES (LOGICA) ---
+
+def haversine_distance(p1, p2):
+    """Berekent afstand tussen twee (lat, lon) punten in meters."""
+    R = 6371000 # Straal van de aarde in meters
+    lat1, lon1 = p1
+    lat2, lon2 = p2
+    phi1, phi2 = radians(lat1), radians(lat2)
+    dphi, dlambda = radians(lat2 - lat1), radians(lon2 - lon1)
+    a = sin(dphi / 2)**2 + cos(phi1) * cos(phi2) * sin(dlambda / 2)**2
+    return 2 * R * asin(sqrt(a))
+
+def get_distance_to_line(p_current, p_start, p_finish):
+    """
+    Berekent de loodrechte afstand van de huidige positie tot de ideale lijn.
+    Versimpelde formule voor kleine afstanden, omgezet naar meters.
+    """
+    y_c, x_c = p_current
+    y_s, x_s = p_start
+    y_f, x_f = p_finish
+    
+    # Loodrechte afstand berekenen in graden
+    numerator = abs((y_f - y_s) * x_c - (x_f - x_s) * y_c + x_f * y_s - y_f * x_s)
+    denominator = sqrt((y_f - y_s)**2 + (x_f - x_s)**2)
+    
+    # Omzetten naar meters (benadering: 1 graad lat = 111.32 km)
+    return (numerator / denominator) * 111320
+
+def calculate_score(afwijking_meters):
+    """Bereken een score op basis van afwijking (100% is perfect)."""
+    score = 100 - (afwijking_meters / 10) # -1% per 10 meter afwijking
+    return max(0, int(score))
+
+# --- 3. UI INITIALISATIE ---
+
+# Donker thema forceren voor 'Mission Control' vibe
+st.markdown("""
+<style>
+    .reportview-container { background: #1a1a1a; color: white; }
+    .metric-label { color: #aaaaaa !important; }
+    .metric-value { color: #00ff00 !important; font-size: 3rem !important; }
+    .stAlert { background-color: #333333; color: white; border: 1px solid #444; }
+</style>
+""", unsafe_allow_html=True)
+
+st.title("📏 Project: RECHTDOOR!")
+st.subheader("De Officiële Vrijwilligers Dropping Challenge")
+
+# --- 4. SIDEBAR (INPUT & LIVE TRACKING MOCKUP) ---
+st.sidebar.header("📡 Live Tracking Status")
+team_name = st.sidebar.selectbox("Selecteer je team", list(START_OPTIONS.keys()))
+start_pos = START_OPTIONS[team_name]
+
+# In een echte app zou je hier browser-geolocatie JS gebruiken.
+# Voor nu simuleert dit de live GPS invoer van het team.
+st.sidebar.markdown("---")
+st.sidebar.subheader("Huidige Coördinaten (Simulatie)")
+mock_lat = st.sidebar.number_input("Lat", value=start_pos[0], format="%.5f")
+mock_lon = st.sidebar.number_input("Lon", value=start_pos[1], format="%.5f")
+current_pos = (mock_lat, mock_lon)
+
+# --- 5. HOOFDBEREKENINGEN ---
+dist_to_line = get_distance_to_line(current_pos, start_pos, FINISH)
+score = calculate_score(dist_to_line)
+total_dist_remaining = haversine_distance(current_pos, FINISH)
+
+# --- 6. HET DASHBOARD (VISUEEL) ---
+col1, col2, col3 = st.columns(3)
+
+with col1:
+    st.metric(label="Huidige Afwijking", value=f"{int(dist_to_line)} m", delta=f"{int(dist_to_line)-10} m sinds vorig punt", delta_color="inverse")
+
+with col2:
+    # Kleur van de score aanpassen op basis van prestatie
+    score_color = "#00ff00" if score > 80 else "#ff9900" if score > 50 else "#ff0000"
+    st.markdown(f"""<div style='text-align:center;'>
+        <p style='color:#aaa;margin:0;'>Rechtheid Score</p>
+        <p style='color:{score_color};font-size:4rem;font-weight:bold;margin:0;'>{score}%</p>
+    </div>""", unsafe_allow_html=True)
+
+with col3:
+    st.metric(label="Nog te gaan (vogelvlucht)", value=f"{total_dist_remaining/1000:.1f} km")
+
+# --- 7. WARNINGS & ALARM SYSTEEM ---
+st.markdown("---")
+
+# Dynamische status op basis van afwijking
+if dist_to_line < 25:
+    st.success("✅ **STATUS:** Perfecte koers! Jullie gaan kaarsrecht.")
+elif dist_to_line < 100:
+    st.warning("⚠️ **WARNING:** Je wijkt af van de ideale lijn! Corrigeer nu.")
+else:
+    st.error("🚨 **ALARM:** KOERS AFWIJKING! Jullie zijn te ver van de lijn.")
+
+# --- 8. DE 'RECOVERY CHALLENGE' (HET ALARM VANUIT REGIE) ---
+st.markdown("---")
+st.sidebar.markdown("---")
+st.sidebar.subheader("🎮 Regie Paneel (Organisatie)")
+
+# State management voor het alarm
+if 'alarm_active' not in st.session_state:
+    st.session_state.alarm_active = False
+
+if st.sidebar.button("🚨 Activeer 'Recovery Alarm'"):
+    st.session_state.alarm_active = True
+    st.session_state.alarm_start_time = datetime.datetime.now()
+
+if st.session_state.alarm_active:
+    time_elapsed = datetime.datetime.now() - st.session_state.alarm_start_time
+    time_left = datetime.timedelta(minutes=15) - time_elapsed
+    
+    if time_left.total_seconds() > 0:
+        st.markdown(f"""
+        <div style="background-color:#ff0000; padding:20px; border-radius:10px; text-align:center; border: 4px solid #fff;">
+            <h1 style="color:white; margin:0; font-size:3rem;">🔥 RECOVERY CHALLENGE! 🔥</h1>
+            <p style="color:white; font-size:1.5rem;">Keer binnen {int(time_left.total_seconds()/60)} minuten terug naar de ideale lijn (< 10m) voor +50 Bonuspunten!</p>
+        </div>
+        """, unsafe_allow_html=True)
+        # Javascript om een geluid af te spelen (werkt in de meeste browsers)
+        st.components.v1.html("""<audio autoplay><source src="https://www.soundjay.com/buttons/beep-01a.mp3" type="audio/mpeg"></audio>""", height=0)
+    else:
+        st.session_state.alarm_active = False
+        st.error("⏰ De Recovery Challenge tijd is om.")
+
+# --- 9. DE KAART ---
+st.subheader("🗺️ Jullie Route")
+# Start kaart op het gemiddelde punt tussen start en finish
+m = folium.Map(location=[(start_pos[0] + FINISH[0])/2, (start_pos[1] + FINISH[1])/2], zoom_start=13, tiles="CartoDB dark_matter")
+
+# Teken de ideale lijn (Groen)
+folium.PolyLine([start_pos, FINISH], color="#00ff00", weight=6, opacity=0.6, tooltip="De Ideale Lijn").add_to(m)
+
+# Teken de huidige positie (Rode Marker)
+folium.Marker(current_pos, popup="Jullie zijn hier", icon=folium.Icon(color="red", icon="user")).add_to(m)
+
+# Teken de Finish (Blauwe Marker)
+folium.Marker(FINISH, popup="JC Bouckenborgh", icon=folium.Icon(color="blue", icon="home")).add_to(m)
+
+st_folium(m, width=1200, height=500)
+
+st.markdown("---")
+st.info(f"Team: {team_name} | Start: {start_pos} | Laatste Update: {datetime.datetime.now().strftime('%H:%M:%S')}")
