@@ -5,13 +5,13 @@ from google.oauth2.service_account import Credentials
 import folium
 from streamlit_folium import st_folium
 from math import radians, cos, sin, asin, sqrt
+import base64
 
 # --- 1. CONFIGURATIE ---
 st.set_page_config(page_title="Dropping 2026", layout="wide", initial_sidebar_state="collapsed")
 
-# We plakken de key hier als één gigantische string zonder enters of spaties erdoorheen.
-# Python plakt de BEGIN en END eromheen met de juiste enters (\n).
-KEY_DATA = (
+# De pure base64 data van je key (zonder BEGIN/END en zonder enters)
+RAW_B64_KEY = (
     "MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQDFPr2jz214sdnZ"
     "aOYDhviCBsAmny1/iZhwEe45+uw25953vRSpUXf5fsLF6OHtZSxNR+IGqANRp0BV"
     "qgrK7X/ytpFQitfMelMDnKrKfnGqhOpJPGrO52z8+OpKGOQPXMSZmjRd79US3cjB"
@@ -33,21 +33,25 @@ KEY_DATA = (
     "qAsaSwYzX6/ScZ9hqXwQ5siabkN20LYak5uiWhEx0Fsm/N6i6oSVMsS+2BZROUjt"
     "bhGQxLa1j6Cg+kLL1YmSXePM8ignXLT/1skd8vwK1XMJBdxJQkfHw26K0QKBgAYy"
     "piQxygzlI63OoQd7v/oNLyyaRmJQhjzbDkisoh/6dw8ocA5oj8zsBi8aYeHs1mKN"
-    "yK2bfdDnd95xoGj9SrmVNJdX2Ookb8ApCBYOLPSgAI9rFMnNIXmOT6gQr16N55lt"
+    "nyK2bfdDnd95xoGj9SrmVNJdX2Ookb8ApCBYOLPSgAI9rFMnNIXmOT6gQr16N55lt"
     "2UmI6CoHtOMigcsjOPKdYvLknEsiBdM+lQofsh/FAoGBAKfZniAjAVKSqUJ8ivqu"
     "8qAnnIE6af3T2i7zHmyJPuj6fMlUPuQyuUhjOosxstHFrlDYUP2uuVbQhGxU4Pve"
     "w1ApbCpYLI6kF2b1M6xGKvT4iIdSWjtIZThoYrDUGITIqtiFUFox+9DICfX8h90z"
     "8LrBdsW6x75evTZx5kdH/pax"
 )
 
-# Hier bouwen we de officiële PEM structuur op
-FINAL_KEY = "-----BEGIN PRIVATE KEY-----\n" + KEY_DATA + "\n-----END PRIVATE KEY-----\n"
+# We bouwen de sleutel handmatig op met EXACT 64 karakters per regel (wat PEM eist)
+def format_private_key(raw_base64):
+    lines = [raw_base64[i:i+64] for i in range(0, len(raw_base64), 64)]
+    return "-----BEGIN PRIVATE KEY-----\n" + "\n".join(lines) + "\n-----END PRIVATE KEY-----\n"
+
+CLEAN_PRIVATE_KEY = format_private_key(RAW_B64_KEY)
 
 SERVICE_ACCOUNT_INFO = {
     "type": "service_account",
     "project_id": "dropping2026",
     "private_key_id": "ff7a191a74fb7123d318f50728b527dcfc09bcc9",
-    "private_key": FINAL_KEY,
+    "private_key": CLEAN_PRIVATE_KEY,
     "client_email": "dropping2026@dropping2026.iam.gserviceaccount.com",
     "token_uri": "https://oauth2.googleapis.com/token",
 }
