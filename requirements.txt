@@ -4,4 +4,4 @@ gspread
 google-auth
 folium
 streamlit-folium
-streamlit-javascript
+
