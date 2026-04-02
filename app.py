@@ -7,38 +7,16 @@ from streamlit_folium import st_folium
 import time
 import math
 
-# --- 1. CONFIGURATIE & SETUP ---
+# --- 1. CONFIGURATIE ---
 st.set_page_config(page_title="Dropping 2026", layout="wide")
 
-# JavaScript voor Persistent Login (LocalStorage)
-st.components.v1.html("""
-<script>
-    const savedTeam = localStorage.getItem('dropping_team');
-    const savedRole = localStorage.getItem('dropping_role');
-    if (savedTeam && !window.parent.location.href.includes('auth=true')) {
-        window.parent.postMessage({
-            type: 'streamlit:set_component_value', 
-            value: {team: savedTeam, role: savedRole}, 
-            key: 'ls_login'
-        }, '*');
-    }
-</script>
-""", height=0)
-
-if "logged_in" not in st.session_state:
-    st.session_state.logged_in = False
-
-# Verwerk automatische login vanuit LocalStorage
-ls = st.session_state.get("ls_login")
-if ls and not st.session_state.logged_in:
-    st.session_state.update({"team": ls['team'], "role": ls['role'], "logged_in": True})
-
-FINISH_COORDS = [51.2443, 4.4505] # JC Bouckenborgh
+# FINISH COORDS: JC Bouckenborgh
+FINISH_COORDS = [51.2443, 4.4505]
 START_PUNTEN = 1000.0
-PUNTEN_PER_SEC = START_PUNTEN / (5 * 3600) # Doel: 5 uur
+PUNTEN_PER_SEC = START_PUNTEN / (5 * 3600)
 EXPECTED_COLS = ["Teamnaam", "Leden", "Fase", "Alarm", "Score", "Last_Update", "Start_Lat", "Start_Lon", "Cur_Lat", "Cur_Lon"]
 
-# --- 2. DATABASE (GOOGLE SHEETS) ---
+# --- 2. DATABASE FUNCTIES ---
 @st.cache_resource
 def get_ss_worksheet():
     try:
@@ -46,159 +24,156 @@ def get_ss_worksheet():
         info["private_key"] = info["private_key"].replace("\\n", "\n")
         creds = Credentials.from_service_account_info(info, scopes=["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"])
         return gspread.authorize(creds).open_by_key("13KipcWXoXnf-ZRK_sughyft3qYOEoYlSf9XAj_dE9kI").sheet1
-    except Exception as e:
-        st.error(f"Database connectie mislukt: {e}")
-        return None
+    except: return None
 
 def get_db_as_df():
     ws = get_ss_worksheet()
     if not ws: return pd.DataFrame(columns=EXPECTED_COLS)
-    
     data = ws.get_all_records()
-    if data:
-        df = pd.DataFrame(data)
-    else:
-        df = pd.DataFrame(columns=EXPECTED_COLS)
-    
-    # Dwing numerieke types om TypeErrors te voorkomen
-    num_cols = ['Score', 'Last_Update', 'Start_Lat', 'Start_Lon', 'Cur_Lat', 'Cur_Lon']
-    for c in num_cols:
-        if c in df.columns:
-            df[c] = pd.to_numeric(df[c], errors='coerce').fillna(0.0)
-    
+    df = pd.DataFrame(data) if data else pd.DataFrame(columns=EXPECTED_COLS)
+    for c in ['Score', 'Last_Update', 'Start_Lat', 'Start_Lon', 'Cur_Lat', 'Cur_Lon']:
+        if c in df.columns: df[c] = pd.to_numeric(df[c], errors='coerce').fillna(0.0)
     df['Teamnaam'] = df['Teamnaam'].astype(str).str.upper()
     return df
 
 def save_df_to_db(df):
     ws = get_ss_worksheet()
-    if ws:
-        ws.update([df.columns.values.tolist()] + df.values.astype(str).tolist())
+    if ws: ws.update([df.columns.values.tolist()] + df.values.astype(str).tolist())
 
-# --- 3. DASHBOARDS ---
+# --- 3. LOGIN BEHEER (URL & SESSION) ---
+if "team" not in st.session_state:
+    # Check URL parameters voor auto-login bij refresh
+    params = st.query_params
+    if "t" in params and "r" in params:
+        st.session_state.team = params["t"]
+        st.session_state.role = params["r"]
+    else:
+        st.session_state.team = None
 
-@st.fragment(run_every=10) # Admin ververst elke 10 sec
-def show_admin_dashboard():
-    st.title("🕹️ Thomas Baas Control Monitor")
+# --- 4. LOGIN SCHERM ---
+if not st.session_state.team:
+    st.title("📍 Dropping 2026")
+    t_name = st.text_input("Teamnaam").strip().upper()
+    t_pass = st.text_input("Wachtwoord (Admin)", type="password")
+    
+    if st.button("Start"):
+        if t_name == "THOMASBAAS" and t_pass == "bobodropping":
+            st.session_state.team, st.session_state.role = "ADMIN", "admin"
+        else:
+            df = get_db_as_df()
+            if t_name not in df['Teamnaam'].values:
+                new_row = {c: 0.0 for c in EXPECTED_COLS}
+                new_row.update({"Teamnaam": t_name, "Fase": "LOCATIE_KIEZEN", "Alarm": "GEEN", "Score": START_PUNTEN, "Last_Update": time.time()})
+                df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
+                save_df_to_db(df)
+            st.session_state.team, st.session_state.role = t_name, "user"
+        
+        # Zet in URL zodat refresh werkt
+        st.query_params["t"] = st.session_state.team
+        st.query_params["r"] = st.session_state.role
+        st.rerun()
+
+# --- 5. ADMIN DASHBOARD ---
+elif st.session_state.role == "admin":
+    st.title("🕹️ Control Room")
     df = get_db_as_df()
     
-    col1, col2 = st.columns([2, 1])
-    with col1:
-        st.subheader("📍 Live Overzicht")
-        m = folium.Map(location=FINISH_COORDS, zoom_start=13)
-        folium.Marker(FINISH_COORDS, tooltip="FINISH", icon=folium.Icon(color='red', icon='flag')).add_to(m)
-        for _, row in df.iterrows():
-            if float(row['Cur_Lat']) != 0:
-                folium.Marker([row['Cur_Lat'], row['Cur_Lon']], 
-                              tooltip=f"{row['Teamnaam']} ({int(row['Score'])} pnt)",
-                              icon=folium.Icon(color='blue')).add_to(m)
-        st_folium(m, width="100%", height=500, key="admin_map")
-
-    with col2:
-        st.subheader("📊 Teams")
-        st.dataframe(df[['Teamnaam', 'Score', 'Fase']], hide_index=True)
-        
-        st.subheader("🚀 Alarm Versturen")
-        team_list = df['Teamnaam'].unique() if not df.empty else []
-        target = st.selectbox("Selecteer Team:", team_list if len(team_list)>0 else ["Geen teams"])
-        msg = st.text_input("Opdracht tekst")
-        mins = st.number_input("Tijdslimiet (min)", 10)
-        if st.button("Push naar Team"):
+    m = folium.Map(location=FINISH_COORDS, zoom_start=13)
+    folium.Marker(FINISH_COORDS, icon=folium.Icon(color='red')).add_to(m)
+    for _, row in df.iterrows():
+        if row['Cur_Lat'] != 0:
+            folium.Marker([row['Cur_Lat'], row['Cur_Lon']], tooltip=row['Teamnaam']).add_to(m)
+    
+    st_folium(m, width="100%", height=400, key="admin_map")
+    st.dataframe(df[['Teamnaam', 'Score', 'Fase', 'Alarm']], hide_index=True)
+    
+    with st.expander("Verstuur Opdracht"):
+        target = st.selectbox("Team:", df['Teamnaam'].unique())
+        msg = st.text_input("Bericht")
+        mins = st.number_input("Minuten", 10)
+        if st.button("Verstuur"):
             deadline = time.time() + (mins * 60)
             df.loc[df['Teamnaam'] == target, 'Alarm'] = f"50|{msg}|{deadline}"
             save_df_to_db(df)
-            st.success("Verzonden!")
+            st.rerun()
 
-@st.fragment(run_every=5) # User ververst elke 5 sec voor GPS & Klok
-def show_user_dashboard():
-    # GPS Bridge: stuurt locatie naar Streamlit
+    if st.button("Log uit"):
+        st.query_params.clear()
+        st.session_state.clear()
+        st.rerun()
+
+    # Forceer pagina herlaad elke 15 sec voor nieuwe teams/locaties
+    time.sleep(15)
+    st.rerun()
+
+# --- 6. DEELNEMERS DASHBOARD ---
+else:
+    # GPS JS: Stuurt data naar Streamlit
     st.components.v1.html("""
     <script>
-        navigator.geolocation.getCurrentPosition((pos) => {
-            window.parent.postMessage({
-                type: 'streamlit:set_component_value',
-                value: {lat: pos.coords.latitude, lon: pos.coords.longitude},
-                key: 'gps_coord'
-            }, '*');
-        }, (err) => {}, {enableHighAccuracy: true});
+    navigator.geolocation.getCurrentPosition((pos) => {
+        window.parent.postMessage({
+            type: 'streamlit:set_component_value',
+            value: {lat: pos.coords.latitude, lon: pos.coords.longitude},
+            key: 'gps'
+        }, '*');
+    }, (err) => { console.log(err); }, {enableHighAccuracy: true});
     </script>
     """, height=0)
 
-    gps = st.session_state.get("gps_coord")
     df = get_db_as_df()
     team_idx = df['Teamnaam'] == st.session_state.team
-    if not any(team_idx): return
     my_data = df[team_idx].iloc[0]
-
-    # Score & Locatie verwerking
+    
+    gps = st.session_state.get("gps")
     if gps:
-        df.loc[team_idx, ['Cur_Lat', 'Cur_Lon']] = [float(gps['lat']), float(gps['lon'])]
+        df.loc[team_idx, ['Cur_Lat', 'Cur_Lon']] = [gps['lat'], gps['lon']]
         if my_data['Fase'] == "DROPPING":
-            nu = time.time()
-            dt = nu - float(my_data['Last_Update'] or nu)
+            dt = time.time() - float(my_data['Last_Update'])
             df.loc[team_idx, 'Score'] = max(0.0, float(my_data['Score']) - (dt * PUNTEN_PER_SEC))
-            df.loc[team_idx, 'Last_Update'] = nu
+            df.loc[team_idx, 'Last_Update'] = time.time()
         save_df_to_db(df)
         my_data = df[team_idx].iloc[0]
 
-    st.header(f"Team: {st.session_state.team} | 🏆 Score: {int(my_data['Score'])}")
+    st.header(f"Team: {st.session_state.team} | 🏆 {int(my_data['Score'])}")
     
-    # Alarm & Aftelklok
-    alarm_str = str(my_data['Alarm'])
-    if "|" in alarm_str:
-        pts, task, dl = alarm_str.split("|")
-        sec_over = int(float(dl) - time.time())
-        if sec_over > 0:
-            st.error(f"🚨 OPDRACHT: {task} (+{pts} ptn)\n\n⌛ Tijd over: {sec_over // 60}m {sec_over % 60}s")
+    # Alarm/Klok
+    if "|" in str(my_data['Alarm']):
+        pts, task, dl = str(my_data['Alarm']).split("|")
+        over = int(float(dl) - time.time())
+        if over > 0:
+            st.error(f"🚨 {task} | ⏳ {over // 60}m {over % 60}s")
         else:
-            st.warning(f"⌛ TIJD IS OM: {task}")
+            st.warning(f"⌛ TIJD OM: {task}")
 
-    # Kaart Fases
+    # Fase check
     if my_data['Fase'] == "LOCATIE_KIEZEN":
-        st.info("Klik op de kaart waar je bent gedropt om te starten.")
-        m = folium.Map(location=FINISH_COORDS, zoom_start=14)
+        st.info("Klik op de kaart waar je bent afgezet en druk op Bevestig.")
+        m = folium.Map(location=FINISH_COORDS, zoom_start=15)
         out = st_folium(m, width=700, height=400, key="picker")
         if out and out.get("last_clicked"):
             if st.button("BEVESTIG STARTPUNT"):
                 c = out["last_clicked"]
-                df.loc[team_idx, ['Start_Lat', 'Start_Lon', 'Cur_Lat', 'Cur_Lon', 'Fase', 'Last_Update']] = [float(c['lat']), float(c['lng']), float(c['lat']), float(c['lng']), "DROPPING", time.time()]
+                df.loc[team_idx, ['Start_Lat', 'Start_Lon', 'Cur_Lat', 'Cur_Lon', 'Fase', 'Last_Update']] = [c['lat'], c['lng'], c['lat'], c['lng'], "DROPPING", time.time()]
                 save_df_to_db(df)
                 st.rerun()
     else:
-        # Blind Mode logica
-        dist = math.sqrt((float(my_data['Cur_Lat'])-float(my_data['Start_Lat']))**2 + (float(my_data['Cur_Lon'])-float(my_data['Start_Lon']))**2) * 111000
-        is_blind = dist > 5 # Blind mode na 5 meter
+        # Blind mode
+        dist = math.sqrt((my_data['Cur_Lat']-my_data['Start_Lat'])**2 + (my_data['Cur_Lon']-my_data['Start_Lon'])**2) * 111000
+        is_blind = dist > 5
         m = folium.Map(location=[my_data['Cur_Lat'], my_data['Cur_Lon']], zoom_start=18, tiles=None if is_blind else "OpenStreetMap")
         if is_blind:
             folium.TileLayer(tiles='https://{s}.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}{r}.png', attr='B').add_to(m)
-            st.warning("🙈 Blind Mode: Geen stratenplan meer zichtbaar!")
-        
         folium.PolyLine([[my_data['Start_Lat'], my_data['Start_Lon']], FINISH_COORDS], color="green", weight=5).add_to(m)
-        folium.Marker(FINISH_COORDS, icon=folium.Icon(color='red', icon='flag')).add_to(m)
+        folium.Marker(FINISH_COORDS, icon=folium.Icon(color='red')).add_to(m)
         folium.Marker([my_data['Cur_Lat'], my_data['Cur_Lon']], icon=folium.Icon(color='blue')).add_to(m)
-        st_folium(m, width=700, height=500, key="live_map")
+        st_folium(m, width=700, height=500, key="map")
 
-# --- 4. LOGIN & LOGOUT ---
-if not st.session_state.logged_in:
-    st.title("📍 Dropping 2026")
-    name = st.text_input("Teamnaam").strip().upper()
-    pw = st.text_input("Wachtwoord (Admin)", type="password")
-    if st.button("Inloggen"):
-        role = "admin" if name == "THOMASBAAS" and pw == "bobodropping" else "user"
-        st.session_state.update({"logged_in": True, "team": name, "role": role})
-        # JS om login lokaal op te slaan
-        st.components.v1.html(f"""
-        <script>
-            localStorage.setItem('dropping_team', '{name}');
-            localStorage.setItem('dropping_role', '{role}');
-            window.parent.location.reload();
-        </script>
-        """, height=0)
+    if st.button("Uitloggen"):
+        st.query_params.clear()
+        st.session_state.clear()
         st.rerun()
-else:
-    if st.session_state.role == "admin":
-        show_admin_dashboard()
-    else:
-        show_user_dashboard()
-    
-    if st.sidebar.button("Log uit"):
-        st.components.v1.html("<script>localStorage.clear(); window.parent.location.reload();</script>", height=0)
+
+    # Elke 10 sec verversen voor klok en GPS
+    time.sleep(10)
+    st.rerun()
