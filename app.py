@@ -6,18 +6,20 @@ import folium
 from streamlit_folium import st_folium
 import time
 import math
+from streamlit_javascript import st_javascript
 
 # --- 1. CONFIG ---
-st.set_page_config(page_title="Dropping 2026 Test", layout="wide")
+st.set_page_config(page_title="Dropping 2026", layout="wide")
 FINISH_COORDS = [51.2435, 4.4452]
 START_PUNTEN = 1000.0
-TIJD_DOEL_UUR = 1 # Snelle afname voor test
+TIJD_DOEL_UUR = 1 # TEST MODUS (SNEL)
 PUNTEN_PER_SEC = START_PUNTEN / (TIJD_DOEL_UUR * 3600)
 REFRESH_RATE = 10 
-BLIND_MODE_DISTANCE = 0.002 # <--- NU OP 2 METER GEZET VOOR TEST
+BLIND_MODE_DISTANCE = 0.002 # 2 meter voor de test
 
 # --- HELPERS ---
 def haversine_distance(p1, p2):
+    if p1 == [0,0] or p2 == [0,0]: return 0
     lat1, lon1 = p1
     lat2, lon2 = p2
     R = 6371
@@ -70,7 +72,6 @@ if not st.session_state.logged_in:
     st.title("📍 Dropping 2026")
     t_name = st.text_input("Teamnaam").strip().upper()
     t_pass = st.text_input("Wachtwoord (enkel Admin)", type="password")
-    
     if st.button("Aanmelden"):
         if t_name == "THOMASBAAS" and t_pass == "bobodropping":
             st.session_state.role, st.session_state.logged_in = "admin", True
@@ -90,9 +91,7 @@ else:
         st.components.v1.html(f"<script>setTimeout(function(){{ window.location.reload(); }}, 15000);</script>", height=0)
         df = get_db_as_df()
         
-        # Admin Kaart
         m_admin = folium.Map(location=FINISH_COORDS, zoom_start=13)
-        folium.Marker(FINISH_COORDS, icon=folium.Icon(color='red')).add_to(m_admin)
         for i, row in df.iterrows():
             if row['Cur_Lat'] != 0:
                 folium.Marker([row['Cur_Lat'], row['Cur_Lon']], tooltip=row['Teamnaam'], icon=folium.Icon(color='blue')).add_to(m_admin)
@@ -103,48 +102,38 @@ else:
         msg = st.text_area("Opdracht")
         pts = st.number_input("Punten", value=50)
         if st.button("Push Opdracht"):
-            df.loc[df['Teamnaam'] == target, 'Alarm'] = f"{pts}|{msg}"
-            save_df_to_db(df); st.rerun()
+            df.loc[df['Teamnaam'] == target, 'Alarm'] = f"{pts}|{msg}"; save_df_to_db(df); st.rerun()
         if st.button("Goedkeuren"):
             val = str(df.loc[df['Teamnaam'] == target, 'Alarm'].values[0])
             bonus = float(val.split('|')[0]) if '|' in val else 0
             df.loc[df['Teamnaam'] == target, 'Score'] += bonus
-            df.loc[df['Teamnaam'] == target, 'Alarm'] = "GEEN"
-            save_df_to_db(df); st.rerun()
+            df.loc[df['Teamnaam'] == target, 'Alarm'] = "GEEN"; save_df_to_db(df); st.rerun()
 
     # --- USER ---
     else:
-        # GPS SCRIPT: Vraagt browser-locatie en stuurt deze door via URL parameters (hacky maar effectief voor Streamlit)
-        # We gebruiken hier een verborgen knop-trigger voor de database update
-        st.components.v1.html(f"""
-            <script>
-            navigator.geolocation.getCurrentPosition(function(position) {{
-                const lat = position.coords.latitude;
-                const lon = position.coords.longitude;
-                window.parent.postMessage({{type: 'streamlit:set_component_value', value: {{lat: lat, lon: lon}}, key: 'gps_data'}}, '*');
-            }});
-            setTimeout(function(){{ window.location.reload(); }}, {REFRESH_RATE * 1000});
-            </script>
-        """, height=0)
+        # GEAVANCEERDE GPS OPHALEN
+        loc_js = st_javascript("""
+            new Promise((resolve, reject) => {
+                navigator.geolocation.getCurrentPosition(
+                    (pos) => resolve({lat: pos.coords.latitude, lon: pos.coords.longitude}),
+                    (err) => resolve(null),
+                    {enableHighAccuracy: true}
+                );
+            });
+        """)
 
-        # Ontvang GPS data van JS
-        gps_input = st.session_state.get("gps_data")
-        
         df = get_db_as_df()
         team_idx = df['Teamnaam'] == st.session_state.team
         my_data = df[team_idx].iloc[0]
 
-        # Update Live Locatie in DB
-        if gps_input:
-            df.loc[team_idx, ['Cur_Lat', 'Cur_Lon']] = [gps_input['lat'], gps_input['lon']]
-            save_df_to_db(df)
-
-        # Score & Afstand
-        if my_data['Fase'] == "DROPPING":
+        # Update Live Locatie als JS data geeft
+        if loc_js and isinstance(loc_js, dict):
+            df.loc[team_idx, ['Cur_Lat', 'Cur_Lon']] = [loc_js['lat'], loc_js['lon']]
+            # Bereken score direct
             nu = time.time()
             dt = nu - float(my_data['Last_Update'])
-            dist_to_line = get_distance_to_line([my_data['Cur_Lat'], my_data['Cur_Lon']], [my_data['Start_Lat'], my_data['Start_Lon']], FINISH_COORDS)
-            dist_from_start = haversine_distance([my_data['Start_Lat'], my_data['Start_Lon']], [my_data['Cur_Lat'], my_data['Cur_Lon']])
+            dist_to_line = get_distance_to_line([loc_js['lat'], loc_js['lon']], [my_data['Start_Lat'], my_data['Start_Lon']], FINISH_COORDS)
+            dist_from_start = haversine_distance([my_data['Start_Lat'], my_data['Start_Lon']], [loc_js['lat'], loc_js['lon']])
             
             straf = 1 + (dist_to_line * 10) if dist_from_start > BLIND_MODE_DISTANCE else 1
             nieuwe_score = max(0, float(my_data['Score']) - (dt * PUNTEN_PER_SEC * straf))
@@ -152,31 +141,33 @@ else:
             df.loc[team_idx, 'Score'] = nieuwe_score
             df.loc[team_idx, 'Last_Update'] = nu
             save_df_to_db(df)
-            my_data['Score'] = nieuwe_score
+            my_data = df[team_idx].iloc[0] # Herlaad lokale data
 
         # UI
         st.title(f"🏆 {int(my_data['Score'])} pnt")
+        st.write(f"📡 GPS Status: {'✅ Verbonden' if loc_js else '❌ Zoeken naar locatie...'}")
+        
         if "|" in str(my_data['Alarm']):
             st.error(f"🚨 OPDRACHT: {str(my_data['Alarm']).split('|')[1]}")
 
         if my_data['Fase'] == "LOCATIE_KIEZEN":
+            st.info("Kies je startpunt op de kaart.")
             m = folium.Map(location=[51.2, 4.4], zoom_start=12)
             st_data = st_folium(m, width=700, height=400, key="start_map")
             if st_data and st_data.get("last_clicked"):
                 if st.button("BEVESTIG START"):
                     c = st_data["last_clicked"]
                     df.loc[team_idx, ['Start_Lat', 'Start_Lon', 'Cur_Lat', 'Cur_Lon']] = [c['lat'], c['lng'], c['lat'], c['lng']]
-                    df.loc[team_idx, 'Fase'] = "DROPPING"
-                    df.loc[team_idx, 'Last_Update'] = time.time()
+                    df.loc[team_idx, 'Fase'] = "DROPPING"; df.loc[team_idx, 'Last_Update'] = time.time()
                     save_df_to_db(df); st.rerun()
         else:
             dist_from_start = haversine_distance([my_data['Start_Lat'], my_data['Start_Lon']], [my_data['Cur_Lat'], my_data['Cur_Lon']])
             is_blind = dist_from_start > BLIND_MODE_DISTANCE
             
             if is_blind:
-                st.warning("🙈 BLIND MODE ACTIEF!")
+                st.warning("🙈 BLIND MODE ACTIEF! Gebruik de lijn.")
                 m = folium.Map(location=[my_data['Cur_Lat'], my_data['Cur_Lon']], zoom_start=18, tiles=None)
-                folium.TileLayer(tiles='https://{{s}}.basemaps.cartocdn.com/light_nolabels/{{z}}/{{x}}/{{y}}{{r}}.png', attr='Blind').add_to(m)
+                folium.TileLayer(tiles='https://{s}.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}{r}.png', attr='Blind').add_to(m)
             else:
                 st.success(f"Nog {round((BLIND_MODE_DISTANCE - dist_from_start)*1000)}m tot Blind Mode")
                 m = folium.Map(location=[my_data['Cur_Lat'], my_data['Cur_Lon']], zoom_start=16)
@@ -185,5 +176,8 @@ else:
             folium.Marker(FINISH_COORDS, icon=folium.Icon(color='red')).add_to(m)
             folium.Marker([my_data['Cur_Lat'], my_data['Cur_Lon']], icon=folium.Icon(color='blue', icon='user')).add_to(m)
             st_folium(m, width=700, height=500, key="user_map")
+
+        # Auto-reload timer (JS)
+        st.components.v1.html(f"<script>setTimeout(function(){{ window.location.reload(); }}, {REFRESH_RATE * 1000});</script>", height=0)
 
         if st.button("Log uit"): st.session_state.logged_in = False; st.rerun()
