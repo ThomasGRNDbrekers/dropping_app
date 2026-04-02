@@ -4,21 +4,40 @@ import gspread
 from google.oauth2.service_account import Credentials
 import folium
 from streamlit_folium import st_folium
-from datetime import datetime, timedelta
+import time
+import math
+from datetime import datetime
 
-# --- 1. CONFIGURATIE & OPDRACHTEN ---
+# --- 1. CONFIGURATIE & WISKUNDE ---
 st.set_page_config(page_title="Dropping 2026 Admin", layout="wide")
 FINISH_COORDS = [51.2435, 4.4452]
+START_PUNTEN = 1000
+TOTALE_TIJD_SECONDEN = 5 * 3600  # 5 uur
+PUNTEN_PER_SEC = START_PUNTEN / TOTALE_TIJD_SECONDEN # Basis afname
 
-# Hier kun je al je opdrachten vooraf definiëren
-OPDRACHTEN_LIJST = {
-    "Geen": {"tekst": "GEEN", "tijd": None, "punten": 0},
-    "📸 Foto bij Kerktoren": {"tekst": "Maak een creatieve groepsfoto bij de dichtstbijzijnde kerktoren!", "tijd": "-00:10:00", "punten": 10},
-    "🧩 Het Raadsel": {"tekst": "Wat wordt natter naarmate het meer droogt? (Antwoord: Handdoek)", "tijd": "-00:05:00", "punten": 5},
-    "🏃 Snelheidsloop": {"tekst": "Ren 500 meter in de richting van de finish!", "tijd": "-00:15:00", "punten": 20},
-    "🚨 Terug naar start": {"tekst": "Helaas, loop 200 meter terug voor de volgende aanwijzing.", "tijd": "+00:05:00", "punten": 0}
-}
+def get_distance_to_line(p3, p1, p2):
+    """Berekent de afstand van huidige locatie (p3) tot de ideale lijn (p1-p2) in km."""
+    y3, x3 = p3
+    y1, x1 = p1
+    y2, x2 = p2
+    
+    # Vereenvoudigde berekening voor korte afstanden (Euclidisch)
+    # Voor echte precisie op grote afstand is Haversine nodig, maar dit volstaat voor een dropping.
+    px = x2 - x1
+    py = y2 - y1
+    norm = px*px + py*py
+    if norm == 0: return 0
+    u = ((x3 - x1) * px + (y3 - y1) * py) / float(norm)
+    if u > 1: u = 1
+    elif u < 0: u = 0
+    x = x1 + u * px
+    y = y1 + u * py
+    dx = x - x3
+    dy = y - y3
+    dist = math.sqrt(dx*dx + dy*dy) * 111 # Omzetten naar km (benadering)
+    return dist
 
+# --- 2. DATABASE CONNECTIE ---
 @st.cache_resource
 def get_ss_worksheet():
     try:
@@ -32,121 +51,146 @@ def get_ss_worksheet():
         return None
 
 def get_db_as_df():
-    cols = ["Teamnaam", "Leden", "Fase", "Alarm", "Score", "Timer", "Start_Lat", "Start_Lon"]
+    cols = ["Teamnaam", "Leden", "Fase", "Alarm", "Score", "Last_Update", "Start_Lat", "Start_Lon", "Cur_Lat", "Cur_Lon"]
     ws = get_ss_worksheet()
     if ws is None: return pd.DataFrame(columns=cols)
-    try:
-        data = ws.get_all_records()
-        df = pd.DataFrame(data) if data else pd.DataFrame(columns=cols)
-        df['Start_Lat'] = pd.to_numeric(df['Start_Lat'], errors='coerce').fillna(0.0)
-        df['Start_Lon'] = pd.to_numeric(df['Start_Lon'], errors='coerce').fillna(0.0)
-        df['Score'] = pd.to_numeric(df['Score'], errors='coerce').fillna(0).astype(int)
-        return df
-    except:
-        return pd.DataFrame(columns=cols)
+    data = ws.get_all_records()
+    df = pd.DataFrame(data) if data else pd.DataFrame(columns=cols)
+    # Zet scores en coordinaten om naar getallen
+    for c in ["Score", "Start_Lat", "Start_Lon", "Cur_Lat", "Cur_Lon"]:
+        df[c] = pd.to_numeric(df[c], errors='coerce').fillna(0.0)
+    return df
 
 def save_df_to_db(df):
     ws = get_ss_worksheet()
     if ws:
-        data_to_save = [df.columns.values.tolist()] + df.values.astype(str).tolist()
         ws.clear()
-        ws.update(data_to_save)
+        ws.update([df.columns.values.tolist()] + df.values.astype(str).tolist())
 
-# --- 2. AUTHENTICATIE ---
+# --- 3. LOGIN ---
 if 'logged_in' not in st.session_state:
     st.session_state.logged_in = False
 
 if not st.session_state.logged_in:
     st.title("📍 Dropping 2026")
     t_name = st.text_input("Teamnaam").strip()
-    l_names = st.text_input("Namen Leden")
     if st.button("Start"):
         if t_name == "THOMASBAAS":
             st.session_state.role, st.session_state.logged_in = "admin", True
             st.rerun()
-        elif t_name and l_names:
+        elif t_name:
             df = get_db_as_df()
-            if t_name not in df['Teamnaam'].astype(str).values:
-                new_row = {"Teamnaam": t_name, "Leden": l_names, "Fase": "LOCATIE_KIEZEN", "Alarm": "GEEN", "Score": 0, "Timer": "01:00:00", "Start_Lat": 0.0, "Start_Lon": 0.0}
+            if t_name not in df['Teamnaam'].values:
+                new_row = {"Teamnaam": t_name, "Leden": "", "Fase": "LOCATIE_KIEZEN", "Alarm": "GEEN", 
+                           "Score": START_PUNTEN, "Last_Update": time.time(), 
+                           "Start_Lat": 0, "Start_Lon": 0, "Cur_Lat": 0, "Cur_Lon": 0}
                 df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
                 save_df_to_db(df)
             st.session_state.team, st.session_state.role, st.session_state.logged_in = t_name, "user", True
             st.rerun()
 else:
-    # --- 3. ADMIN PANEL (CONTROL ROOM) ---
+    # --- 4. ADMIN PANEL ---
     if st.session_state.role == "admin":
         st.title("🕹️ Control Room Master")
         df = get_db_as_df()
-        st.dataframe(df, use_container_width=True)
+        st.dataframe(df)
         
         st.divider()
-        st.subheader("🚀 Opdracht & Punten Pushen")
-        
-        col_t, col_o = st.columns([1, 2])
-        with col_t:
-            target = st.selectbox("Kies Team:", df['Teamnaam'].unique())
-        with col_o:
-            opdracht_naam = st.selectbox("Kies Opdracht uit lijst:", list(OPDRACHTEN_LIJST.keys()))
-        
-        sel = OPDRACHTEN_LIJST[opdracht_naam]
-        
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            final_msg = st.text_area("Bericht tekst:", value=sel['tekst'], height=100)
-        with c2:
-            current_timer = df.loc[df['Teamnaam'] == target, 'Timer'].values[0]
-            new_timer = st.text_input("Nieuwe Timer (HH:MM:SS):", value=current_timer)
-            st.caption(f"Suggestie: {sel['tijd'] if sel['tijd'] else 'Geen wijziging'}")
-        with c3:
-            current_score = int(df.loc[df['Teamnaam'] == target, 'Score'].values[0])
-            new_score = st.number_input("Nieuwe Totaalscore:", value=current_score + sel['punten'])
+        target = st.selectbox("Selecteer Team:", df['Teamnaam'].unique())
+        col1, col2 = st.columns(2)
+        with col1:
+            msg = st.text_area("Opdracht Tekst")
+            punten_opdracht = st.number_input("Te verdienen punten:", value=50)
+        with col2:
+            st.write("Acties:")
+            if st.button(f"PUSH OPDRACHT NAAR {target}"):
+                df.loc[df['Teamnaam'] == target, 'Alarm'] = f"PUNTEN:{punten_opdracht}|{msg}"
+                save_df_to_db(df)
+                st.success("Opdracht verzonden!")
+            
+            if st.button(f"KEUR OPDRACHT GOED VOOR {target}"):
+                # Zoek de punten uit de 'Alarm' kolom of handmatig
+                bonus = st.number_input("Bonus toekennen:", value=punten_opdracht, key="bonus_approve")
+                df.loc[df['Teamnaam'] == target, 'Score'] += bonus
+                df.loc[df['Teamnaam'] == target, 'Alarm'] = "GEEN"
+                save_df_to_db(df)
+                st.success(f"{bonus} punten bijgeteld!")
+                st.rerun()
 
-        if st.button(f"PUSH ALLES NAAR {target}", type="primary"):
-            df.loc[df['Teamnaam'] == target, 'Alarm'] = final_msg
-            df.loc[df['Teamnaam'] == target, 'Timer'] = new_timer
-            df.loc[df['Teamnaam'] == target, 'Score'] = new_score
-            save_df_to_db(df)
-            st.success(f"✅ Opdracht, tijd en score gepusht naar {target}!")
-            st.rerun()
-
-        if st.button("Log uit"): st.session_state.logged_in = False; st.rerun()
-
-    # --- 4. TEAM PANEL ---
+    # --- 5. DEELNEMER PANEL ---
     else:
-        st.components.v1.html("<script>setTimeout(function(){window.location.reload();}, 15000);</script>", height=0)
+        # Locatie tracking script (vraagt GPS van telefoon)
+        st.components.v1.html("""
+            <script>
+            navigator.geolocation.watchPosition(function(position) {
+                window.parent.postMessage({
+                    type: 'streamlit:set_component_value',
+                    value: {lat: position.coords.latitude, lon: position.coords.longitude}
+                }, '*');
+            });
+            </script>
+        """, height=0)
+
         df = get_db_as_df()
-        my_team = df[df['Teamnaam'] == st.session_state.team]
+        team_data = df[df['Teamnaam'] == st.session_state.team].iloc[0]
         
-        if not my_team.empty:
-            my_data = my_team.iloc[0]
-            if str(my_data['Alarm']) != "GEEN":
-                st.error(f"🚨 **NIEUWE OPDRACHT:** \n\n {my_data['Alarm']}")
-                if st.button("GELEZEN & START"):
-                    df.loc[df['Teamnaam'] == st.session_state.team, 'Alarm'] = "GEEN"
-                    save_df_to_db(df); st.rerun()
-                st.stop()
+        # PUNTEN BEREKENING (Tijd + Afwijking)
+        if team_data['Fase'] == "DROPPING":
+            nu = time.time()
+            verstreken = nu - float(team_data['Last_Update'])
+            
+            # Bereken afwijking van de lijn
+            cur_pos = [team_data['Cur_Lat'], team_data['Cur_Lon']]
+            start_pos = [team_data['Start_Lat'], team_data['Start_Lon']]
+            afwijking = get_distance_to_line(cur_pos, start_pos, FINISH_COORDS)
+            
+            # Straf-factor: hoe verder van de lijn, hoe sneller punten weg
+            # Elke km afwijking verdubbelt de afnamesnelheid
+            straf_factor = 1 + (afwijking * 2) 
+            min_punten = verstreken * PUNTEN_PER_SEC * straf_factor
+            
+            nieuwe_score = max(0, team_data['Score'] - min_punten)
+            
+            # Update database met nieuwe score en tijdstip
+            df.loc[df['Teamnaam'] == st.session_state.team, 'Score'] = nieuwe_score
+            df.loc[df['Teamnaam'] == st.session_state.team, 'Last_Update'] = nu
+            save_df_to_db(df)
+            team_data['Score'] = nieuwe_score # Voor directe weergave
 
-            st.title(f"Team: {st.session_state.team}")
-            c_a, c_b = st.columns(2)
-            c_a.metric("⏳ Tijd over", my_data['Timer'])
-            c_b.metric("🏆 Score", f"{my_data['Score']} Pnt")
+        # UI
+        st.title(f"Team: {st.session_state.team}")
+        
+        # Opdracht check
+        if "PUNTEN:" in str(team_data['Alarm']):
+            pts = team_data['Alarm'].split("|")[0].replace("PUNTEN:", "")
+            inhoud = team_data['Alarm'].split("|")[1]
+            st.warning(f"🎁 NIEUWE OPDRACHT: Verdien {pts} punten!")
+            st.write(inhoud)
+            if st.button("Ik ga aan de slag"):
+                # Verander de status zodat ze de kaart weer zien, maar de opdracht blijft staan voor admin
+                st.info("Succes! De admin zal de punten toevoegen na goedkeuring.")
 
-            if my_data['Fase'] == "LOCATIE_KIEZEN":
-                st.info("Kies je startlocatie op de kaart:")
-                m = folium.Map(location=[51.2, 4.4], zoom_start=11)
-                st_data = st_folium(m, width="100%", height=400)
-                if st_data and st_data['last_clicked']:
-                    if st.button("Bevestig Locatie"):
-                        df.loc[df['Teamnaam'] == st.session_state.team, 'Start_Lat'] = st_data['last_clicked']['lat']
-                        df.loc[df['Teamnaam'] == st.session_state.team, 'Start_Lon'] = st_data['last_clicked']['lng']
-                        df.loc[df['Teamnaam'] == st.session_state.team, 'Fase'] = "DROPPING"
-                        save_df_to_db(df); st.rerun()
-            else:
-                start = [float(my_data['Start_Lat']), float(my_data['Start_Lon'])]
-                m = folium.Map(location=start, zoom_start=14)
-                folium.Marker(start, tooltip="Start").add_to(m)
-                folium.Marker(FINISH_COORDS, tooltip="Finish", icon=folium.Icon(color='red')).add_to(m)
-                folium.PolyLine([start, FINISH_COORDS], color="blue", dash_array='10').add_to(m)
-                st_folium(m, width="100%", height=500)
-
-        if st.button("Log uit"): st.session_state.logged_in = False; st.rerun()
+        col1, col2 = st.columns(2)
+        col1.metric("🏆 Actuele Score", f"{int(team_data['Score'])} / 1000")
+        
+        if team_data['Fase'] == "LOCATIE_KIEZEN":
+            st.info("Kies je startlocatie op de kaart.")
+            m = folium.Map(location=[51.2, 4.4], zoom_start=11)
+            st_data = st_folium(m, width="100%", height=400)
+            if st_data and st_data['last_clicked'] and st.button("Start Dropping"):
+                df.loc[df['Teamnaam'] == st.session_state.team, 'Start_Lat'] = st_data['last_clicked']['lat']
+                df.loc[df['Teamnaam'] == st.session_state.team, 'Start_Lon'] = st_data['last_clicked']['lng']
+                df.loc[df['Teamnaam'] == st.session_state.team, 'Fase'] = "DROPPING"
+                df.loc[df['Teamnaam'] == st.session_state.team, 'Last_Update'] = time.time()
+                save_df_to_db(df); st.rerun()
+        else:
+            # Kaart met ideale lijn
+            start = [team_data['Start_Lat'], team_data['Start_Lon']]
+            m = folium.Map(location=start, zoom_start=14)
+            folium.PolyLine([start, FINISH_COORDS], color="green", dash_array='10', tooltip="Ideale Lijn").add_to(m)
+            folium.Marker(start, tooltip="Start").add_to(m)
+            folium.Marker(FINISH_COORDS, icon=folium.Icon(color='red')).add_to(m)
+            st_folium(m, width="100%", height=500)
+            st.caption("Auto-refresh elke 30 sec.")
+            time.sleep(30)
+            st.rerun()
