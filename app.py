@@ -9,45 +9,51 @@ from math import radians, cos, sin, asin, sqrt
 # --- 1. CONFIGURATIE ---
 st.set_page_config(page_title="Dropping 2026", layout="wide", initial_sidebar_state="collapsed")
 
-# Hardcoded credentials om TOML/Secrets fouten te omzeilen
+# De rauwe sleutel direct uit je JSON
+RAW_KEY = "-----BEGIN PRIVATE KEY-----\nMIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQDFPr2jz214sdnZ\naOYDhviCBsAmny1/iZhwEe45+uw25953vRSpUXf5fsLF6OHtZSxNR+IGqANRp0BV\nqgrK7X/ytpFQitfMelMDnKrKfnGqhOpJPGrO52z8+OpKGOQPXMSZmjRd79US3cjB\ m24C8igLh3tLuFL0LbGG/GPN2LpBQ8/7zAp1Xo6x82gMrGCy1PEEQyqm/YrKOBCk\ nnJDBPz/CDIvDSzIIXOrwnz9x/P5eqvynFJrO5v9Kye+xH7Os14BtG7Q24GF92GG4\n2FR4F2FCHb5nH6msLCdUX3iYC+6mTmJnPpVEqnQqSmILfuw/+20t9K887nSxiPmh\n0PSdr30tAgMBAAECggEAD//rSfd4Ybm1hONI2IDmisTplHMa3Eqo7PBQvW8bTEc0\niSHIjwUpgPlqwGXdYRBw+UeAhWSJY7fNf2q8FjgRMKWQCzM+rDAWU0eY+rTVMLfi\n5ElsauJOuYTRxmxsoCAONN0owcpDo6njZWxfo7QJEl8Cne1dUerHSNPoyZ4QBQf1\nSFjMs2TZYl16DtwuQmmQ4PYvodaBhqtVGZjFaizGHu3BXjZT2kTojGakQz9qQd+l\nrJSo8iJG+4xt4htt8QQys6AK6t9JSWIVnbfScM79dJY3CqlV/0QAQ2tz7TGlGguN\vmlyWMyyTiH6l+ypLSYMe8TPQSaiaVUQ1/i9SgHrEQKBgQD3gib6kKYLSr1stsVx\nqNMsQiXircrDnZB9bQc/y0zVHBmRl30cOttAhk5ibCozbMgCT1Rz+vi7DEmquR57\cdLDB8dbtBoOJzeGB7pexqkOXifRwFzipJLvfrQ7y+VPk2kC0TIYsDdAF2syAKaH\YYQVXfeXIx9axwBYrhsKFHnSUQKBgQDMAyEnNSJrIWArf8k9bqMDG0ml7JU6GxKQ\nbneLHITFkpWd9VsDjRPdAQrRJEHfLSvEXHpUHLo7kYWU9S49KkQAgV9Y53mBZS13\nCSkoBYfA3MsUZdxeXcTxL5n0/HSmzTswZzZPOrjCZOxvh0Fmm5dQ6z4jsC06B5Sr\n1VkyHJOKHQKBgQCGTOgro9uFWwvH9rDSSKI1bLsz8cuJM3EYrdV2JzFMnc+98W5g\nqAsaSwYzX6/ScZ9hqXwQ5siabkN20LYak5uiWhEx0Fsm/N6i6oSVMsS+2BZROUjt\nbhGQxLa1j6Cg+kLL1YmSXePM8ignXLT/1skd8vwK1XMJBdxJQkfHw26K0QKBgAYy\piQxygzlI63OoQd7v/oNLyyaRmJQhjzbDkisoh/6dw8ocA5oj8zsBi8aYeHs1mKN\nyK2bfdDnd95xoGj9SrmVNJdX2Ookb8ApCBYOLPSgAI9rFMnNIXmOT6gQr16N55lt\ 2UmI6CoHtOMigcsjOPKdYvLknEsiBdM+lQofsh/FAoGBAKfZniAjAVKSqUJ8ivqu\ 8qAnnIE6af3T2i7zHmyJPuj6fMlUPuQyuUhjOosxstHFrlDYUP2uuVbQhGxU4Pve\nw1ApbCpYLI6kF2b1M6xGKvT4iIdSWjtIZThoYrDUGITIqtiFUFox+9DICfX8h90z\n8LrBdsW6x75evTZx5kdH/pax\n-----END PRIVATE KEY-----\n"
+
+# CRUCIALE STAP: Vertaal de \n karakters naar echte enters
+CLEAN_KEY = RAW_KEY.replace("\\n", "\n")
+
 SERVICE_ACCOUNT_INFO = {
     "type": "service_account",
     "project_id": "dropping2026",
     "private_key_id": "ff7a191a74fb7123d318f50728b527dcfc09bcc9",
-    "private_key": "-----BEGIN PRIVATE KEY-----\nMIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQDFPr2jz214sdnZ\naOYDhviCBsAmny1/iZhwEe45+uw25953vRSpUXf5fsLF6OHtZSxNR+IGqANRp0BV\nqgrK7X/ytpFQitfMelMDnKrKfnGqhOpJPGrO52z8+OpKGOQPXMSZmjRd79US3cjB\nm24C8igLh3tLuFL0LbGG/GPN2LpBQ8/7zAp1Xo6x82gMrGCy1PEEQyqm/YrKOBCk\nnJDBPz/CDIvDSzIIXOrwnz9x/P5eqvynFJrO5v9Kye+xH7Os14BtG7Q24GF92GG4\n2FR4F2FCHb5nH6msLCdUX3iYC+6mTmJnPpVEqnQqSmILfuw/+20t9K887nSxiPmh\n0PSdr30tAgMBAAECggEAD//rSfd4Ybm1hONI2IDmisTplHMa3Eqo7PBQvW8bTEc0\niSHIjwUpgPlqwGXdYRBw+UeAhWSJY7fNf2q8FjgRMKWQCzM+rDAWU0eY+rTVMLfi\n5ElsauJOuYTRxmxsoCAONN0owcpDo6njZWxfo7QJEl8Cne1dUerHSNPoyZ4QBQf1\nSFjMs2TZYl16DtwuQmmQ4PYvodaBhqtVGZjFaizGHu3BXjZT2kTojGakQz9qQd+l\nrJSo8iJG+4xt4htt8QQys6AK6t9JSWIVnbfScM79dJY3CqlV/0QAQ2tz7TGlGguN\vmlyWMyyTiH6l+ypLSYMe8TPQSaiaVUQ1/i9SgHrEQKBgQD3gib6kKYLSr1stsVx\nqNMsQiXircrDnZB9bQc/y0zVHBmRl30cOttAhk5ibCozbMgCT1Rz+vi7DEmquR57\ncdLDB8dbtBoOJzeGB7pexqkOXifRwFzipJLvfrQ7y+VPk2kC0TIYsDdAF2syAKaH\YYQVXfeXIx9axwBYrhsKFHnSUQKBgQDMAyEnNSJrIWArf8k9bqMDG0ml7JU6GxKQ\nbneLHITFkpWd9VsDjRPdAQrRJEHfLSvEXHpUHLo7kYWU9S49KkQAgV9Y53mBZS13\nCSkoBYfA3MsUZdxeXcTxL5n0/HSmzTswZzZPOrjCZOxvh0Fmm5dQ6z4jsC06B5Sr\n1VkyHJOKHQKBgQCGTOgro9uFWwvH9rDSSKI1bLsz8cuJM3EYrdV2JzFMnc+98W5g\nqAsaSwYzX6/ScZ9hqXwQ5siabkN20LYak5uiWhEx0Fsm/N6i6oSVMsS+2BZROUjt\nbhGQxLa1j6Cg+kLL1YmSXePM8ignXLT/1skd8vwK1XMJBdxJQkfHw26K0QKBgAYy\piQxygzlI63OoQd7v/oNLyyaRmJQhjzbDkisoh/6dw8ocA5oj8zsBi8aYeHs1mKN\nyK2bfdDnd95xoGj9SrmVNJdX2Ookb8ApCBYOLPSgAI9rFMnNIXmOT6gQr16N55lt\n2UmI6CoHtOMigcsjOPKdYvLknEsiBdM+lQofsh/FAoGBAKfZniAjAVKSqUJ8ivqu\n8qAnnIE6af3T2i7zHmyJPuj6fMlUPuQyuUhjOosxstHFrlDYUP2uuVbQhGxU4Pve\nw1ApbCpYLI6kF2b1M6xGKvT4iIdSWjtIZThoYrDUGITIqtiFUFox+9DICfX8h90z\n8LrBdsW6x75evTZx5kdH/pax\n-----END PRIVATE KEY-----\n",
+    "private_key": CLEAN_KEY,
     "client_email": "dropping2026@dropping2026.iam.gserviceaccount.com",
     "token_uri": "https://oauth2.googleapis.com/token",
 }
 
-# Verbinding maken via gspread
+# Verbinding maken met Google Sheets via gspread
 @st.cache_resource
 def get_ss_worksheet():
     scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
     creds = Credentials.from_service_account_info(SERVICE_ACCOUNT_INFO, scopes=scopes)
     client = gspread.authorize(creds)
+    # Jouw specifieke Sheet ID
     sh = client.open_by_key("13KipcWXoXnf-ZRK_sughyft3qYOEoYlSf9XAj_dE9kI")
     return sh.worksheet("Data")
 
 try:
     ws = get_ss_worksheet()
 except Exception as e:
-    st.error(f"⚠️ Kan geen verbinding maken met Google Sheets: {e}")
+    st.error(f"⚠️ Verbindingsfout: {e}")
     st.stop()
 
 # --- 2. DATA FUNCTIES ---
 def get_db():
-    # Haalt alle rijen op en zet ze in een DataFrame
     data = ws.get_all_records()
     return pd.DataFrame(data)
 
 def save_to_db(df):
-    # gspread verwacht een lijst van lijsten inclusief headers
     ws.clear()
-    ws.update([df.columns.values.tolist()] + df.values.tolist())
+    # Zorg dat de data als lijst-van-lijsten wordt geüpload inclusief headers
+    data_to_upload = [df.columns.values.tolist()] + df.values.tolist()
+    ws.update(data_to_upload)
 
 # --- 3. LOGICA & HELPER FUNCTIES ---
 def haversine(lat1, lon1, lat2, lon2):
-    R = 6371
+    R = 6371 # Straal van de aarde in km
     dLat, dLon = radians(lat2 - lat1), radians(lon2 - lon1)
     a = sin(dLat / 2)**2 + cos(radians(lat1)) * cos(radians(lat2)) * sin(dLon / 2)**2
     return R * 2 * asin(sqrt(a))
@@ -57,10 +63,10 @@ FINISH_COORDS = (51.2435, 4.4452) # JC Bouckenborgh
 if 'logged_in' not in st.session_state:
     st.session_state.logged_in = False
 
-# --- UI ---
+# --- 4. GEBRUIKERSINTERFACE (UI) ---
 if not st.session_state.logged_in:
     st.title("📍 Dropping 2026 - Login")
-    team_naam = st.text_input("Teamnaam (bijv. 'De Bosuilen')").strip()
+    team_naam = st.text_input("Teamnaam").strip()
     leden = st.text_input("Namen van de leden")
     
     if st.button("Start Dropping"):
@@ -97,46 +103,43 @@ else:
         st.dataframe(df)
         
         st.divider()
-        target_team = st.selectbox("Selecteer Team voor Alarm", df['Teamnaam'].unique())
-        alarm_msg = st.text_input("Bericht (bijv: 'Loop 100m terug!')")
+        target_team = st.selectbox("Kies Team voor Alarm", df['Teamnaam'].unique())
+        alarm_msg = st.text_input("Alarmbericht")
         
         if st.button("Verstuur naar team"):
             df.loc[df['Teamnaam'] == target_team, 'Alarm'] = alarm_msg
             save_to_db(df)
-            st.success("Alarm verzonden!")
+            st.success(f"Bericht verzonden naar {target_team}!")
 
     # --- TEAM SECTIE ---
     else:
         df = get_db()
-        # Data ophalen voor specifiek team
         my_data = df[df['Teamnaam'] == st.session_state.team].iloc[0]
         
         st.header(f"Team: {st.session_state.team}")
         
-        # Alarm melding
+        # Check op Alarms
         if my_data['Alarm'] != "GEEN":
-            st.error(f"🚨 BOODSCHAP VAN DE LEIDING: \n\n {my_data['Alarm']}")
-            if st.button("Gelezen en begrepen"):
+            st.error(f"🚨 BERICHT: {my_data['Alarm']}")
+            if st.button("Gelezen"):
                 df.loc[df['Teamnaam'] == st.session_state.team, 'Alarm'] = "GEEN"
                 save_to_db(df)
                 st.rerun()
 
         if my_data['Fase'] == "START":
-            st.info("Welkom bij de dropping! Druk op de knop zodra je op je startpunt bent.")
+            st.info("Druk op de knop zodra je op je startpunt bent.")
             if st.button("BEVESTIG STARTPUNT"):
                 df.loc[df['Teamnaam'] == st.session_state.team, 'Fase'] = "BEZIG"
                 save_to_db(df)
                 st.rerun()
         else:
-            # Afstand berekenen (fictief startpunt voor demo, vervang door GPS indien gewenst)
+            # Afstand (demo waarde)
             dist = haversine(51.21, 4.41, FINISH_COORDS[0], FINISH_COORDS[1])
-            st.metric("Afstand tot JC Bouckenborgh", f"{round(dist, 2)} km")
+            st.metric("Afstand tot Finish", f"{round(dist, 2)} km")
             
-            # Kaart
             m = folium.Map(location=[51.2194, 4.4025], zoom_start=13)
-            folium.Marker(FINISH_COORDS, tooltip="FINISH", icon=folium.Icon(color='red', icon='flag')).add_to(m)
-            
+            folium.Marker(FINISH_COORDS, tooltip="FINISH", icon=folium.Icon(color='red')).add_to(m)
             st_folium(m, width="100%", height=400)
             
             if st.button("Locatie updaten"):
-                st.toast("Locatie doorgegeven!")
+                st.toast("Locatie doorgegeven aan de leiding!")
