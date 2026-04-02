@@ -11,8 +11,12 @@ FINISH_COORDS = [51.2435, 4.4452]
 
 @st.cache_resource
 def get_ss_worksheet():
-    # Haal de JSON-gegevens rechtstreeks uit de Streamlit Secrets
+    # Haal de gegevens op uit secrets
     info = dict(st.secrets["gcp_service_account"])
+    
+    # CRUCIALE FIX: Zorg dat de enters (\n) in de key echt als enters worden gezien
+    info["private_key"] = info["private_key"].replace("\\n", "\n")
+    
     creds = Credentials.from_service_account_info(
         info, 
         scopes=["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
