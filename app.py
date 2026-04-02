@@ -7,7 +7,7 @@ from streamlit_folium import st_folium
 import time
 import math
 
-# --- 1. INITIALISATIE (MOET BOVENAAN) ---
+# --- 1. INITIALISATIE ---
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
     st.session_state.team = None
@@ -38,16 +38,25 @@ def get_db_as_df():
     if not data:
         ws.update([EXPECTED_COLS])
         return pd.DataFrame(columns=EXPECTED_COLS)
+    
     df = pd.DataFrame(data)
+    
+    # CRUCIALE FIX: Dwing kolommen naar getallen om TypeError te voorkomen
+    num_cols = ['Score', 'Last_Update', 'Start_Lat', 'Start_Lon', 'Cur_Lat', 'Cur_Lon']
+    for col in num_cols:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
+            
     df['Teamnaam'] = df['Teamnaam'].astype(str).str.upper()
     return df
 
 def save_df_to_db(df):
     ws = get_ss_worksheet()
     if ws:
+        # Alles als tekst naar de sheet schrijven is prima, Pandas heeft het nu intern als getal
         ws.update([df.columns.values.tolist()] + df.values.astype(str).tolist())
 
-# --- 4. HET DASHBOARD (FRAGMENTEN) ---
+# --- 4. DASHBOARDS ---
 
 @st.fragment(run_every=10)
 def show_admin_dashboard():
@@ -59,11 +68,8 @@ def show_admin_dashboard():
         m = folium.Map(location=FINISH_COORDS, zoom_start=13)
         folium.Marker(FINISH_COORDS, tooltip="FINISH", icon=folium.Icon(color='red')).add_to(m)
         for _, row in df.iterrows():
-            try:
-                lat, lon = float(row['Cur_Lat']), float(row['Cur_Lon'])
-                if lat != 0:
-                    folium.Marker([lat, lon], tooltip=row['Teamnaam']).add_to(m)
-            except: continue
+            if float(row['Cur_Lat']) != 0:
+                folium.Marker([row['Cur_Lat'], row['Cur_Lon']], tooltip=row['Teamnaam']).add_to(m)
         st_folium(m, width="100%", height=450, key="admin_map_live")
 
     with col2:
@@ -71,7 +77,7 @@ def show_admin_dashboard():
         st.dataframe(df[['Teamnaam', 'Score', 'Fase']], hide_index=True)
         
         with st.expander("Nieuwe Opdracht"):
-            target = st.selectbox("Team:", df['Teamnaam'].unique())
+            target = st.selectbox("Team:", df['Teamnaam'].unique() if not df.empty else ["GEEN TEAMS"])
             msg = st.text_input("Bericht")
             pts = st.number_input("Punten", 50)
             mins = st.number_input("Tijd (min)", 10)
@@ -83,7 +89,7 @@ def show_admin_dashboard():
 
 @st.fragment(run_every=7)
 def show_user_dashboard():
-    # JavaScript voor GPS (moet in het fragment voor updates)
+    # De GPS Bridge script
     st.components.v1.html("""
         <script>
         navigator.geolocation.getCurrentPosition((pos) => {
@@ -99,39 +105,51 @@ def show_user_dashboard():
     gps_val = st.session_state.get("gps_sync")
     df = get_db_as_df()
     team_idx = df['Teamnaam'] == st.session_state.team
+    
+    if not any(team_idx):
+        st.error("Team niet gevonden. Log opnieuw in.")
+        st.session_state.logged_in = False
+        st.rerun()
+
     my_data = df[team_idx].iloc[0]
 
-    # Sync
+    # Sync GPS & Score
     if gps_val:
-        df.loc[team_idx, ['Cur_Lat', 'Cur_Lon']] = [gps_val['lat'], gps_val['lon']]
+        df.loc[team_idx, ['Cur_Lat', 'Cur_Lon']] = [float(gps_val['lat']), float(gps_val['lon'])]
         if my_data['Fase'] == "DROPPING":
-            dt = time.time() - float(my_data['Last_Update'] or time.time())
-            df.loc[team_idx, 'Score'] = max(0, float(my_data['Score']) - (dt * PUNTEN_PER_SEC))
-            df.loc[team_idx, 'Last_Update'] = time.time()
+            nu = time.time()
+            dt = nu - float(my_data['Last_Update'] or nu)
+            df.loc[team_idx, 'Score'] = max(0.0, float(my_data['Score']) - (dt * PUNTEN_PER_SEC))
+            df.loc[team_idx, 'Last_Update'] = nu
         save_df_to_db(df)
+        # Update lokale variabele na opslaan
+        my_data = df[team_idx].iloc[0]
 
     st.header(f"Team: {st.session_state.team} | 🏆 {int(my_data['Score'])}")
     
     # Alarm/Timer
     if "|" in str(my_data['Alarm']):
-        pts, task, dl = str(my_data['Alarm']).split("|")
-        sec_over = int(float(dl) - time.time())
-        if sec_over > 0:
-            st.error(f"🚨 {task} (+{pts}) | ⏳ {sec_over // 60}m {sec_over % 60}s")
-        else: st.warning(f"⌛ TIJD OM: {task}")
+        parts = str(my_data['Alarm']).split("|")
+        if len(parts) == 3:
+            pts, task, dl = parts
+            sec_over = int(float(dl) - time.time())
+            if sec_over > 0:
+                st.error(f"🚨 {task} (+{pts}) | ⏳ {sec_over // 60}m {sec_over % 60}s")
+            else: st.warning(f"⌛ TIJD OM: {task}")
 
-    # Kaart
+    # Kaart logica
     if my_data['Fase'] == "LOCATIE_KIEZEN":
-        st.info("Kies je startpunt.")
+        st.info("Kies je startpunt op de kaart.")
         m = folium.Map(location=FINISH_COORDS, zoom_start=15)
         out = st_folium(m, width=700, height=350, key="start_map_user")
         if out and out.get("last_clicked"):
-            if st.button("BEVESTIG START"):
+            if st.button("BEVESTIG STARTPUNT"):
                 c = out["last_clicked"]
-                df.loc[team_idx, ['Start_Lat', 'Start_Lon', 'Cur_Lat', 'Cur_Lon', 'Fase', 'Last_Update']] = [c['lat'], c['lng'], c['lat'], c['lng'], "DROPPING", time.time()]
-                save_df_to_db(df); st.rerun()
+                df.loc[team_idx, ['Start_Lat', 'Start_Lon', 'Cur_Lat', 'Cur_Lon', 'Fase', 'Last_Update']] = [float(c['lat']), float(c['lng']), float(c['lat']), float(c['lng']), "DROPPING", time.time()]
+                save_df_to_db(df)
+                st.rerun()
     else:
-        dist = math.sqrt((float(my_data['Cur_Lat'])-float(my_data['Start_Lat']))**2) * 111000
+        dist = math.sqrt((float(my_data['Cur_Lat'])-float(my_data['Start_Lat']))**2 + (float(my_data['Cur_Lon'])-float(my_data['Start_Lon']))**2) * 111000
         is_blind = dist > 2
         m = folium.Map(location=[my_data['Cur_Lat'], my_data['Cur_Lon']], zoom_start=18, tiles=None if is_blind else "OpenStreetMap")
         if is_blind:
@@ -141,12 +159,12 @@ def show_user_dashboard():
         folium.Marker([my_data['Cur_Lat'], my_data['Cur_Lon']], icon=folium.Icon(color='blue')).add_to(m)
         st_folium(m, width=700, height=450, key="live_map_user")
 
-# --- 5. DE HOOFD-LOGICA (LOGIN CHECK) ---
+# --- 5. HOOFD LOGICA ---
 
 if not st.session_state.logged_in:
     st.title("📍 Dropping 2026")
     name = st.text_input("Teamnaam").strip().upper()
-    pw = st.text_input("Wachtwoord (voor Admin)", type="password")
+    pw = st.text_input("Wachtwoord (Admin)", type="password")
     
     if st.button("Inloggen"):
         if name == "THOMASBAAS" and pw == "bobodropping":
@@ -158,7 +176,7 @@ if not st.session_state.logged_in:
             df = get_db_as_df()
             if name not in df['Teamnaam'].values:
                 new_row = {c: "" for c in EXPECTED_COLS}
-                new_row.update({"Teamnaam": name, "Fase": "LOCATIE_KIEZEN", "Alarm": "GEEN", "Score": START_PUNTEN, "Last_Update": time.time()})
+                new_row.update({"Teamnaam": name, "Fase": "LOCATIE_KIEZEN", "Alarm": "GEEN", "Score": float(START_PUNTEN), "Last_Update": time.time(), "Start_Lat": 0.0, "Start_Lon": 0.0, "Cur_Lat": 0.0, "Cur_Lon": 0.0})
                 df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
                 save_df_to_db(df)
             st.session_state.logged_in = True
@@ -166,7 +184,6 @@ if not st.session_state.logged_in:
             st.session_state.team = name
             st.rerun()
 else:
-    # Als we ingelogd zijn, toon de dashboards
     if st.session_state.role == "admin":
         show_admin_dashboard()
     else:
