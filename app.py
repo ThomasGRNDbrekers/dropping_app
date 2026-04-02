@@ -10,9 +10,19 @@ import re
 # --- 1. CONFIGURATIE ---
 st.set_page_config(page_title="Dropping 2026", layout="wide")
 
-# De ruwe data van je private key. 
-# We gebruiken één grote tekststring en filteren later alle rommel eruit.
-RAW_KEY_STRING = """
+# Deze functie zorgt dat de sleutel ALTIJD het juiste formaat heeft, 
+# hoe slordig het ook geplakt is.
+def get_clean_key(raw_key):
+    # Verwijder headers/footers als die er per ongeluk dubbel in staan
+    core = raw_key.replace("-----BEGIN PRIVATE KEY-----", "").replace("-----END PRIVATE KEY-----", "")
+    # Verwijder ALLE witruimte (spaties, enters, tabs)
+    core = re.sub(r'\s+', '', core)
+    # Zet de officiële PEM structuur eromheen
+    return f"-----BEGIN PRIVATE KEY-----\n{core}\n-----END PRIVATE KEY-----\n"
+
+# DE SLEUTEL: Plak hieronder je sleutel. 
+# Zelfs als er enters of spaties tussen staan, de code hierboven wast het schoon.
+MY_SECRET_KEY = """
 MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQDFPr2jz214sdnZ
 aOYDhviCBsAmny1/iZhwEe45+uw25953vRSpUXf5fsLF6OHtZSxNR+IGqANRp0BV
 qgrK7X/ytpFQitfMelMDnKrKfnGqhOpJPGrO52z8+OpKGOQPXMSZmjRd79US3cjB
@@ -41,17 +51,11 @@ w1ApbCpYLI6kF2b1M6xGKvT4iIdSWjtIZThoYrDUGITIqtiFUFox+9DICfX8h90z
 8LrBdsW6x75evTZx5kdH/pax
 """
 
-# SCHOONMAAK: We halen ELKE spatie, enter en tab uit de string
-clean_content = re.sub(r'\s+', '', RAW_KEY_STRING)
-
-# We bouwen de PEM-sleutel opnieuw op met de juiste kop en staart
-formatted_key = f"-----BEGIN PRIVATE KEY-----\n{clean_content}\n-----END PRIVATE KEY-----\n"
-
 SERVICE_ACCOUNT_INFO = {
     "type": "service_account",
     "project_id": "dropping2026",
     "private_key_id": "ff7a191a74fb7123d318f50728b527dcfc09bcc9",
-    "private_key": formatted_key,
+    "private_key": get_clean_key(MY_SECRET_KEY),
     "client_email": "dropping2026@dropping2026.iam.gserviceaccount.com",
     "token_uri": "https://oauth2.googleapis.com/token",
 }
@@ -61,14 +65,13 @@ def get_ss_worksheet():
     scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
     creds = Credentials.from_service_account_info(SERVICE_ACCOUNT_INFO, scopes=scopes)
     client = gspread.authorize(creds)
-    # Open de sheet op ID
     sh = client.open_by_key("13KipcWXoXnf-ZRK_sughyft3qYOEoYlSf9XAj_dE9kI")
     return sh.worksheet("Data")
 
 try:
     ws = get_ss_worksheet()
 except Exception as e:
-    st.error(f"❌ Verbindingsfout: {e}")
+    st.error(f"⚠️ Verbindingsfout: {e}")
     st.stop()
 
 # --- 2. DATA FUNCTIES ---
@@ -77,16 +80,15 @@ def get_db():
 
 def save_to_db(df):
     ws.clear()
-    data = [df.columns.values.tolist()] + df.values.tolist()
-    ws.update(data)
+    ws.update([df.columns.values.tolist()] + df.values.tolist())
 
-# --- 3. UI LOGICA ---
+# --- 3. UI & INLOGGEN ---
 if 'logged_in' not in st.session_state:
     st.session_state.logged_in = False
 
 if not st.session_state.logged_in:
     st.title("📍 Dropping 2026")
-    team = st.text_input("Teamnaam (Admin = THOMASBAAS)").strip()
+    team = st.text_input("Teamnaam").strip()
     
     if st.button("Start"):
         if team == "THOMASBAAS":
@@ -97,33 +99,25 @@ if not st.session_state.logged_in:
             df = get_db()
             if team not in df['Teamnaam'].values:
                 new_row = {"Teamnaam": team, "Fase": "START", "Alarm": "GEEN", "Score": 0}
-                df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True).fillna(0)
+                df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
                 save_to_db(df)
             st.session_state.team = team
             st.session_state.role = "user"
             st.session_state.logged_in = True
             st.rerun()
 else:
+    # --- ADMIN PAGINA ---
     if st.session_state.role == "admin":
         st.title("🕹️ Control Room")
         df = get_db()
-        st.write("### Live Data")
         st.dataframe(df)
-        
-        target = st.selectbox("Stuur bericht naar:", df['Teamnaam'].unique())
-        msg = st.text_input("Bericht:")
-        if st.button("Verstuur"):
-            df.loc[df['Teamnaam'] == target, 'Alarm'] = msg
-            save_to_db(df)
-            st.success("Bericht verzonden!")
-        
         if st.button("Uitloggen"):
             st.session_state.logged_in = False
             st.rerun()
+    # --- USER PAGINA ---
     else:
-        st.header(f"Welkom, Team {st.session_state.team}")
+        st.title(f"Team: {st.session_state.team}")
         st.success("Verbinding met Google Sheets is gelukt!")
-        # Hier komt later de rest van je kaart en GPS logica
         if st.button("Uitloggen"):
             st.session_state.logged_in = False
             st.rerun()
