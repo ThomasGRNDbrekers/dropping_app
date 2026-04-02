@@ -86,32 +86,88 @@ if not st.session_state.logged_in:
             st.session_state.team, st.session_state.role, st.session_state.logged_in = t_name, "user", True
             st.rerun()
 else:
-    # --- ADMIN ---
+# --- 4. ADMIN PANEL (THOMASBAAS) ---
     if st.session_state.role == "admin":
-        st.title("🕹️ Control Room")
-        # Auto-refresh Admin
-        st.components.v1.html(f"<script>setTimeout(function(){{ window.location.reload(); }}, 10000);</script>", height=0)
+        st.title("🕹️ Control Room - Master Overview")
+        
+        # Auto-refresh Admin elke 15 seconden (iets trager dan user om API te sparen)
+        st.components.v1.html(f"<script>setTimeout(function(){{ window.location.reload(); }}, 15000);</script>", height=0)
         
         df = get_db_as_df()
-        st.write("Live overzicht van alle teams:")
-        st.dataframe(df, use_container_width=True)
-        
+
+        # --- LIVE KAART VOOR ADMIN ---
+        st.subheader("📍 Live Locaties Teams")
         if not df.empty:
-            target = st.selectbox("Team actie:", df['Teamnaam'].unique())
-            msg = st.text_area("Opdracht tekst")
-            pts = st.number_input("Punten indicatie", value=50)
-            c1, c2 = st.columns(2)
-            with c1:
-                if st.button("🚀 Push Opdracht"):
-                    df.loc[df['Teamnaam'] == target, 'Alarm'] = f"{pts}|{msg}"
-                    save_df_to_db(df); st.rerun()
-            with c2:
-                if st.button("✅ Goedkeuren & Punten bijtellen"):
-                    val = str(df.loc[df['Teamnaam'] == target, 'Alarm'].values[0])
-                    bonus = float(val.split('|')[0]) if '|' in val else 0
-                    df.loc[df['Teamnaam'] == target, 'Score'] += bonus
-                    df.loc[df['Teamnaam'] == target, 'Alarm'] = "GEEN"
-                    save_df_to_db(df); st.rerun()
+            # Centreer de kaart tussen de teams of op de finish
+            m_admin = folium.Map(location=FINISH_COORDS, zoom_start=12)
+            
+            # Voeg Finish toe
+            folium.Marker(FINISH_COORDS, tooltip="FINISH: Bouckenborgh", icon=folium.Icon(color='red', icon='flag')).add_to(m_admin)
+
+            colors = ['blue', 'orange', 'green', 'purple', 'cadetblue'] # Verschillende kleuren voor teams
+            
+            for i, row in df.iterrows():
+                t_name = row['Teamnaam']
+                color = colors[i % len(colors)]
+                
+                # Als het team al gestart is (coördinaten zijn niet 0)
+                if row['Cur_Lat'] != 0:
+                    start_pos = [row['Start_Lat'], row['Start_Lon']]
+                    curr_pos = [row['Cur_Lat'], row['Cur_Lon']]
+                    
+                    # 1. Teken de ideale lijn voor dit team
+                    folium.PolyLine([start_pos, FINISH_COORDS], color=color, weight=2, opacity=0.5, dash_array='5', tooltip=f"Lijn {t_name}").add_to(m_admin)
+                    
+                    # 2. Teken hun huidige positie
+                    folium.Marker(
+                        curr_pos, 
+                        tooltip=f"Team: {t_name}",
+                        popup=f"<b>{t_name}</b><br>Score: {int(row['Score'])}<br>Status: {row['Fase']}",
+                        icon=folium.Icon(color=color, icon='info-sign')
+                    ).add_to(m_admin)
+                    
+                    # 3. Teken een cirkel rond hun positie
+                    folium.Circle(curr_pos, radius=100, color=color, fill=True, opacity=0.2).add_to(m_admin)
+
+            st_folium(m_admin, width="100%", height=500)
+        else:
+            st.info("Nog geen teams aangemeld.")
+
+        st.divider()
+
+        # --- CONTROLS (OPDRACHTEN & PUNTEN) ---
+        st.subheader("🎮 Team Management")
+        if not df.empty:
+            col1, col2 = st.columns([1, 2])
+            
+            with col1:
+                st.dataframe(df[['Teamnaam', 'Score', 'Fase']])
+            
+            with col2:
+                target = st.selectbox("Selecteer Team voor actie:", df['Teamnaam'].unique())
+                msg = st.text_area("Opdracht tekst (bv. 'Zoek de verborgen code bij de eik')")
+                pts = st.number_input("Te verdienen punten", value=50, step=10)
+                
+                c1, c2 = st.columns(2)
+                with c1:
+                    if st.button("🚀 Stuur Opdracht"):
+                        df.loc[df['Teamnaam'] == target, 'Alarm'] = f"{pts}|{msg}"
+                        save_df_to_db(df)
+                        st.success(f"Opdracht gepusht naar {target}!")
+                        st.rerun()
+                with c2:
+                    if st.button("✅ Keur Goed & Tel Bij"):
+                        val = str(df.loc[df['Teamnaam'] == target, 'Alarm'].values[0])
+                        bonus = float(val.split('|')[0]) if '|' in val else 0
+                        df.loc[df['Teamnaam'] == target, 'Score'] += bonus
+                        df.loc[df['Teamnaam'] == target, 'Alarm'] = "GEEN"
+                        save_df_to_db(df)
+                        st.success(f"Bonus van {bonus} ptn toegekend aan {target}!")
+                        st.rerun()
+
+        if st.button("Uitloggen Admin"):
+            st.session_state.logged_in = False
+            st.rerun()
 
     # --- USER ---
     else:
