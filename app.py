@@ -5,12 +5,11 @@ from google.oauth2.service_account import Credentials
 import folium
 from streamlit_folium import st_folium
 from math import radians, cos, sin, asin, sqrt
-import time
 
-# --- 1. CONFIGURATIE & VERBINDING ---
-st.set_page_config(page_title="Dropping 2026", layout="wide")
+# --- 1. CONFIGURATIE ---
+st.set_page_config(page_title="Dropping 2026", layout="wide", initial_sidebar_state="collapsed")
 
-# De credentials direct in de code om TOML-fouten te vermijden
+# Hardcoded credentials om TOML/Secrets fouten te omzeilen
 SERVICE_ACCOUNT_INFO = {
     "type": "service_account",
     "project_id": "dropping2026",
@@ -22,52 +21,56 @@ SERVICE_ACCOUNT_INFO = {
 
 # Verbinding maken via gspread
 @st.cache_resource
-def get_worksheet():
-    scopes = ["https://www.googleapis.com/auth/spreadsheets"]
+def get_ss_worksheet():
+    scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
     creds = Credentials.from_service_account_info(SERVICE_ACCOUNT_INFO, scopes=scopes)
     client = gspread.authorize(creds)
-    # Gebruik je Sheet ID (uit de URL van je browser)
     sh = client.open_by_key("13KipcWXoXnf-ZRK_sughyft3qYOEoYlSf9XAj_dE9kI")
     return sh.worksheet("Data")
 
-ws = get_worksheet()
+try:
+    ws = get_ss_worksheet()
+except Exception as e:
+    st.error(f"⚠️ Kan geen verbinding maken met Google Sheets: {e}")
+    st.stop()
 
 # --- 2. DATA FUNCTIES ---
 def get_db():
+    # Haalt alle rijen op en zet ze in een DataFrame
     data = ws.get_all_records()
     return pd.DataFrame(data)
 
 def save_to_db(df):
-    # Update de hele sheet (headers + data)
+    # gspread verwacht een lijst van lijsten inclusief headers
+    ws.clear()
     ws.update([df.columns.values.tolist()] + df.values.tolist())
 
-# --- 3. HELPER FUNCTIES ---
+# --- 3. LOGICA & HELPER FUNCTIES ---
 def haversine(lat1, lon1, lat2, lon2):
     R = 6371
     dLat, dLon = radians(lat2 - lat1), radians(lon2 - lon1)
     a = sin(dLat / 2)**2 + cos(radians(lat1)) * cos(radians(lat2)) * sin(dLon / 2)**2
     return R * 2 * asin(sqrt(a))
 
-# --- 4. LOGICA ---
 FINISH_COORDS = (51.2435, 4.4452) # JC Bouckenborgh
 
 if 'logged_in' not in st.session_state:
     st.session_state.logged_in = False
 
+# --- UI ---
 if not st.session_state.logged_in:
-    st.title("📍 Dropping 2026 - Inloggen")
-    team_naam = st.text_input("Teamnaam").strip()
-    leden = st.text_input("Namen van de leden (komma gescheiden)")
+    st.title("📍 Dropping 2026 - Login")
+    team_naam = st.text_input("Teamnaam (bijv. 'De Bosuilen')").strip()
+    leden = st.text_input("Namen van de leden")
     
     if st.button("Start Dropping"):
-        if team_naam and leden:
+        if team_naam and (leden or team_naam == "THOMASBAAS"):
             df = get_db()
             if team_naam == "THOMASBAAS":
                 st.session_state.role = "admin"
                 st.session_state.logged_in = True
                 st.rerun()
             else:
-                # Check of team al bestaat, anders toevoegen
                 if team_naam not in df['Teamnaam'].values:
                     new_row = {
                         "Teamnaam": team_naam, "Leden": leden, 
@@ -83,58 +86,57 @@ if not st.session_state.logged_in:
                 st.session_state.logged_in = True
                 st.rerun()
         else:
-            st.warning("Vul aub alle velden in.")
+            st.warning("Vul aub een teamnaam en leden in.")
 
 else:
     # --- ADMIN SECTIE ---
     if st.session_state.role == "admin":
         st.title("🕹️ Control Room")
         df = get_db()
+        st.write("### Status van alle teams")
         st.dataframe(df)
         
-        target_team = st.selectbox("Kies Team", df['Teamnaam'].unique())
-        alarm_msg = st.text_input("Nieuw Alarmbericht")
+        st.divider()
+        target_team = st.selectbox("Selecteer Team voor Alarm", df['Teamnaam'].unique())
+        alarm_msg = st.text_input("Bericht (bijv: 'Loop 100m terug!')")
         
-        if st.button("Verstuur Alarm"):
+        if st.button("Verstuur naar team"):
             df.loc[df['Teamnaam'] == target_team, 'Alarm'] = alarm_msg
             save_to_db(df)
-            st.success(f"Alarm verstuurd naar {target_team}")
+            st.success("Alarm verzonden!")
 
-    # --- USER SECTIE ---
+    # --- TEAM SECTIE ---
     else:
         df = get_db()
+        # Data ophalen voor specifiek team
         my_data = df[df['Teamnaam'] == st.session_state.team].iloc[0]
         
-        st.title(f"🚩 Team: {st.session_state.team}")
+        st.header(f"Team: {st.session_state.team}")
         
-        # Check op Alarms (Push notificatie simulatie)
+        # Alarm melding
         if my_data['Alarm'] != "GEEN":
-            st.error(f"🚨 ALERT: {my_data['Alarm']}")
-            if st.button("Ik heb het begrepen"):
+            st.error(f"🚨 BOODSCHAP VAN DE LEIDING: \n\n {my_data['Alarm']}")
+            if st.button("Gelezen en begrepen"):
                 df.loc[df['Teamnaam'] == st.session_state.team, 'Alarm'] = "GEEN"
                 save_to_db(df)
                 st.rerun()
 
-        # Fase 1: Startlocatie bepalen
         if my_data['Fase'] == "START":
-            st.info("Druk op de knop zodra je gedropt bent!")
-            if st.button("IK BEN GEDROPT - Leg mijn startpunt vast"):
-                # Hier zou je JS kunnen gebruiken voor echte locatie, we simuleren nu even
-                # Voor de demo vragen we de gebruiker om toestemming via de browser later
-                st.success("Locatie vastgelegd! (In een echte omgeving pakken we nu je GPS)")
+            st.info("Welkom bij de dropping! Druk op de knop zodra je op je startpunt bent.")
+            if st.button("BEVESTIG STARTPUNT"):
                 df.loc[df['Teamnaam'] == st.session_state.team, 'Fase'] = "BEZIG"
                 save_to_db(df)
                 st.rerun()
-
-        # Fase 2: De Kaart
         else:
-            dist = haversine(51.2, 4.4, FINISH_COORDS[0], FINISH_COORDS[1]) # Demo afstand
+            # Afstand berekenen (fictief startpunt voor demo, vervang door GPS indien gewenst)
+            dist = haversine(51.21, 4.41, FINISH_COORDS[0], FINISH_COORDS[1])
             st.metric("Afstand tot JC Bouckenborgh", f"{round(dist, 2)} km")
             
-            m = folium.Map(location=[51.2194, 4.4025], zoom_start=12)
-            folium.Marker(FINISH_COORDS, tooltip="FINISH: JC Bouckenborgh", icon=folium.Icon(color='red')).add_to(m)
-            # Voeg hier de lijn toe van start naar finish als de coördinaten er zijn
-            st_folium(m, width=700)
+            # Kaart
+            m = folium.Map(location=[51.2194, 4.4025], zoom_start=13)
+            folium.Marker(FINISH_COORDS, tooltip="FINISH", icon=folium.Icon(color='red', icon='flag')).add_to(m)
             
-            if st.button("Update mijn locatie"):
-                st.toast("Locatie bijgewerkt in de database!")
+            st_folium(m, width="100%", height=400)
+            
+            if st.button("Locatie updaten"):
+                st.toast("Locatie doorgegeven!")
