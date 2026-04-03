@@ -1,193 +1,117 @@
-import streamlit as st
-import pandas as pd
-import gspread
-from google.oauth2.service_account import Credentials
-import folium
-from streamlit_folium import st_folium
-import streamlit.components.v1 as components
-import time
-import math
+from fastapi import FastAPI, Response
+from fastapi.responses import HTMLResponse
+from pydantic import BaseModel
+import sqlite3
+import json
 
-# ---------------- CONFIG ----------------
-st.set_page_config(page_title="Dropping 2026", layout="wide")
+app = FastAPI()
+DB = "dropping.db"
 
-FINISH_COORDS = [51.2443, 4.4505]
-START_PUNTEN = 1000.0
-PUNTEN_PER_SEC = START_PUNTEN / (5 * 3600)
-EXPECTED_COLS = [
-    "Teamnaam","Leden","Fase","Alarm","Score","Last_Update",
-    "Start_Lat","Start_Lon","Cur_Lat","Cur_Lon"
-]
+# --- DATABASE SETUP ---
+def init_db():
+    with sqlite3.connect(DB) as conn:
+        conn.execute("""CREATE TABLE IF NOT EXISTS teams 
+            (name TEXT PRIMARY KEY, lat REAL, lon REAL, score INTEGER)""")
+init_db()
 
-# ---------------- DATABASE ----------------
-@st.cache_resource
-def get_ws():
-    try:
-        info = dict(st.secrets["gcp_service_account"])
-        info["private_key"] = info["private_key"].replace("\\n", "\n")
-        creds = Credentials.from_service_account_info(info, scopes=[
-            "https://www.googleapis.com/auth/spreadsheets",
-            "https://www.googleapis.com/auth/drive"
-        ])
-        return gspread.authorize(creds).open_by_key(
-            "13KipcWXoXnf-ZRK_sughyft3qYOEoYlSf9XAj_dE9kI"
-        ).sheet1
-    except:
-        return None
+# --- API ENDPOINTS ---
+class LocationUpdate(BaseModel):
+    name: str
+    lat: float
+    lon: float
 
-@st.cache_data(ttl=10)
-def get_df():
-    ws = get_ws()
-    if not ws:
-        return pd.DataFrame(columns=EXPECTED_COLS)
-    try:
-        data = ws.get_all_records()
-    except Exception:
-        return pd.DataFrame(columns=EXPECTED_COLS)
-    df = pd.DataFrame(data) if data else pd.DataFrame(columns=EXPECTED_COLS)
-    for c in ['Score','Last_Update','Start_Lat','Start_Lon','Cur_Lat','Cur_Lon']:
-        if c in df.columns:
-            df[c] = pd.to_numeric(df[c], errors='coerce').fillna(0.0)
-    df['Teamnaam'] = df['Teamnaam'].astype(str).str.upper()
-    return df
+@app.post("/update")
+async def update(data: LocationUpdate):
+    with sqlite3.connect(DB) as conn:
+        conn.execute("INSERT OR REPLACE INTO teams (name, lat, lon, score) VALUES (?, ?, ?, 1000)",
+                     (data.name.upper(), data.lat, data.lon))
+    return {"status": "success"}
 
+@app.get("/teams")
+async def get_teams():
+    with sqlite3.connect(DB) as conn:
+        cursor = conn.execute("SELECT name, lat, lon FROM teams")
+        return [{"name": r[0], "lat": r[1], "lon": r[2]} for r in cursor.fetchall()]
 
-def save_df(df):
-    ws = get_ws()
-    if not ws:
-        return
-    try:
-        ws.update([df.columns.values.tolist()] + df.values.astype(str).tolist())
-    except Exception:
-        time.sleep(1)
-        try:
-            ws.update([df.columns.values.tolist()] + df.values.astype(str).tolist())
-        except Exception:
-            pass
+# --- FRONTEND (HTML + JS) ---
+@app.get("/", response_class=HTMLResponse)
+async def index():
+    return """
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Dropping 2026</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+        <style>
+            body { font-family: sans-serif; margin: 0; padding: 20px; text-align: center; }
+            #map { height: 300px; width: 100%; border-radius: 10px; margin-top: 20px; }
+            button { background: #007bff; color: white; border: none; padding: 15px; border-radius: 5px; font-size: 16px; cursor: pointer; }
+            input { padding: 10px; margin: 10px; border: 1px solid #ccc; width: 80%; }
+            .admin-section { display: none; margin-top: 30px; border-top: 2px solid #eee; }
+        </style>
+    </head>
+    <body>
+        <h1>🏃 Dropping 2026</h1>
+        
+        <input type="text" id="teamName" placeholder="Teamnaam invullen...">
+        <br>
+        <button onclick="sendLocation()">📍 Deel mijn Locatie</button>
+        <p id="status"></p>
 
-# ---------------- LOGIN ----------------
-if "team" not in st.session_state:
-    params = st.query_params
-    if "t" in params and "r" in params:
-        st.session_state.team = params["t"]
-        st.session_state.role = params["r"]
-    else:
-        st.session_state.team = None
+        <div id="map"></div>
 
-# ---------------- LOGIN SCREEN ----------------
-if not st.session_state.team:
-    st.title("📍 Dropping 2026")
-    team = st.text_input("Teamnaam").strip().upper()
-    leden = st.text_input("Teamleden")
-    pw = st.text_input("Admin wachtwoord", type="password")
+        <button onclick="document.getElementById('admin').style.display='block'" style="background:gray; margin-top:50px; font-size:10px;">Admin Overzicht</button>
+        
+        <div id="admin" class="admin-section">
+            <h2>🛡️ Live Team Monitor</h2>
+            <button onclick="refreshAdminMap()">Ververs Kaart</button>
+        </div>
 
-    if st.button("Start"):
-        if team == "THOMASBAAS" and pw == "bobodropping":
-            st.session_state.team = "ADMIN"
-            st.session_state.role = "admin"
-        else:
-            df = get_df()
-            if team not in df['Teamnaam'].values:
-                new = {c: 0.0 for c in EXPECTED_COLS}
-                new.update({
-                    "Teamnaam": team,
-                    "Leden": leden,
-                    "Fase": "LOCATIE_KIEZEN",
-                    "Alarm": "GEEN",
-                    "Score": START_PUNTEN,
-                    "Last_Update": time.time()
-                })
-                df = pd.concat([df, pd.DataFrame([new])], ignore_index=True)
-                save_df(df)
-            st.session_state.team = team
-            st.session_state.role = "user"
-        st.query_params["t"] = st.session_state.team
-        st.query_params["r"] = st.session_state.role
-        st.rerun()
-
-# ---------------- ADMIN ----------------
-elif st.session_state.role == "admin":
-    st.title("🕹️ Control Room")
-    df = get_df()
-
-    # Map met teams
-    m = folium.Map(location=FINISH_COORDS, zoom_start=13)
-    folium.Marker(FINISH_COORDS, icon=folium.Icon(color='red')).add_to(m)
-    for _, r in df.iterrows():
-        if r['Cur_Lat'] != 0:
-            folium.Marker([r['Cur_Lat'], r['Cur_Lon']], tooltip=r['Teamnaam']).add_to(m)
-    st_folium(m, height=400)
-
-    st.dataframe(df[['Teamnaam','Score','Fase','Alarm']], use_container_width=True)
-
-    # Opdracht sturen
-    st.subheader("📨 Verstuur Opdracht")
-    target = st.selectbox("Team", df['Teamnaam'].unique())
-    msg = st.text_input("Opdracht")
-    pts = st.number_input("Punten bij afronden", 1, 1000, 50)
-    mins = st.number_input("Minuten", 1, 120, 10)
-    if st.button("Verstuur opdracht"):
-        deadline = time.time() + mins*60
-        df.loc[df['Teamnaam']==target, 'Alarm'] = f"{pts}|{msg}|{deadline}"
-        save_df(df)
-        st.success(f"Opdracht naar {target} verstuurd!")
-
-    if st.button("Reset game"):
-        df['Score'] = START_PUNTEN
-        df['Fase'] = "LOCATIE_KIEZEN"
-        df['Alarm'] = 'GEEN'
-        save_df(df)
-
-    if st.button("Logout"):
-        st.session_state.clear()
-        st.query_params.clear()
-        st.rerun()
-
-# ---------------- PLAYER ----------------
-else:
-    df = get_df()
-    team_idx = df['Teamnaam'] == st.session_state.team
-    if df[team_idx].empty:
-        st.warning("⚠️ Team data niet gevonden, herladen...")
-        st.rerun()
-    my = df[team_idx].iloc[0]
-
-    st.header(f"🏆 {st.session_state.team} — {int(my['Score'])} punten")
-
-    # Alarm tonen
-    if '|' in str(my['Alarm']):
-        pts, task, dl = str(my['Alarm']).split('|')
-        left = int(float(dl)-time.time())
-        if left>0:
-            st.error(f"🚨 {task} | ⏳ {left//60}m {left%60}s | +{pts} pts")
-        else:
-            st.warning(f"⌛ Tijd om: {task} | +{pts} pts")
-
-    # Eén kaart met startlocatie en lijn naar finish
-    m = folium.Map(location=FINISH_COORDS, zoom_start=15)
-    folium.Marker(FINISH_COORDS, icon=folium.Icon(color='red'), tooltip='Finish').add_to(m)
-    if my['Cur_Lat'] != 0:
-        folium.Marker([my['Cur_Lat'], my['Cur_Lon']], icon=folium.Icon(color='blue'), tooltip='Laatste GPS').add_to(m)
-        folium.PolyLine([[my['Start_Lat'], my['Start_Lon']], [my['Cur_Lat'], my['Cur_Lon']], FINISH_COORDS], color='green', weight=5).add_to(m)
-    st_folium(m, height=500, key='single_map')
-
-    # Knop om GPS één keer door te geven
-    if st.button("Geef GPS locatie"):
-        components.html('''
+        <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
         <script>
-        navigator.geolocation.getCurrentPosition((pos) => {
-            window.parent.postMessage({type:'streamlit:setComponentValue', value:{lat: pos.coords.latitude, lon: pos.coords.longitude}}, '*');
-        });
+            var map = L.map('map').setView([51.2194, 4.4025], 13);
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
+            var marker;
+
+            async function sendLocation() {
+                const name = document.getElementById('teamName').value;
+                if (!name) return alert("Vul eerst een teamnaam in!");
+
+                if (!navigator.geolocation) return alert("GPS niet ondersteund");
+
+                navigator.geolocation.getCurrentPosition(async (pos) => {
+                    const lat = pos.coords.latitude;
+                    const lon = pos.coords.longitude;
+
+                    if (marker) map.removeLayer(marker);
+                    marker = L.marker([lat, lon]).addTo(map).bindPopup("Jouw Locatie").openPopup();
+                    map.setView([lat, lon], 15);
+
+                    const res = await fetch('/update', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({name: name, lat: lat, lon: lon})
+                    });
+                    
+                    if (res.ok) document.getElementById('status').innerText = "Locatie verzonden om " + new Date().toLocaleTimeString();
+                }, (err) => {
+                    alert("GPS Fout: " + err.message);
+                }, { enableHighAccuracy: true });
+            }
+
+            async function refreshAdminMap() {
+                const res = await fetch('/teams');
+                const teams = await res.json();
+                teams.forEach(t => {
+                    L.marker([t.lat, t.lon]).addTo(map).bindPopup("Team: " + t.name);
+                });
+            }
         </script>
-        ''', height=0)
-        st.info("GPS locatie doorgegeven (mag een paar seconden duren)")
+    </body>
+    </html>
+    """
 
-    gps = st.session_state.get('_component_value')
-    if gps and 'lat' in gps and 'lon' in gps:
-        df.loc[team_idx, ['Cur_Lat','Cur_Lon']] = [gps['lat'], gps['lon']]
-        save_df(df)
-
-    if st.button('Logout'):
-        st.session_state.clear()
-        st.query_params.clear()
-        st.rerun()
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
