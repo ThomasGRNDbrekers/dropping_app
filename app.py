@@ -74,8 +74,8 @@ def save_df(df):
         time.sleep(1)
         try:
             ws.update([df.columns.values.tolist()] + df.values.astype(str).tolist())
-        except:
-            pass([df.columns.values.tolist()] + df.values.astype(str).tolist())
+        except Exception:
+            pass  # correcte syntax voor fail-safe
 
 # ---------------- LOGIN ----------------
 if "team" not in st.session_state:
