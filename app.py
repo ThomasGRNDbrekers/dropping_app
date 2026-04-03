@@ -42,7 +42,16 @@ def get_df():
     if not ws:
         return pd.DataFrame(columns=EXPECTED_COLS)
 
-    data = ws.get_all_records()
+    try:
+        data = ws.get_all_records()
+    except Exception as e:
+        st.warning("⚠️ Google Sheets tijdelijk niet bereikbaar. Probeer opnieuw...")
+        time.sleep(1)
+        try:
+            data = ws.get_all_records()
+        except:
+            return pd.DataFrame(columns=EXPECTED_COLS)
+
     df = pd.DataFrame(data) if data else pd.DataFrame(columns=EXPECTED_COLS)
 
     for c in ['Score','Last_Update','Start_Lat','Start_Lon','Cur_Lat','Cur_Lon']:
@@ -55,8 +64,18 @@ def get_df():
 
 def save_df(df):
     ws = get_ws()
-    if ws:
+    if not ws:
+        return
+
+    try:
         ws.update([df.columns.values.tolist()] + df.values.astype(str).tolist())
+    except Exception:
+        st.warning("⚠️ Opslaan mislukt, opnieuw proberen...")
+        time.sleep(1)
+        try:
+            ws.update([df.columns.values.tolist()] + df.values.astype(str).tolist())
+        except:
+            pass([df.columns.values.tolist()] + df.values.astype(str).tolist())
 
 # ---------------- LOGIN ----------------
 if "team" not in st.session_state:
