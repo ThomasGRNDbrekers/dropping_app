@@ -18,7 +18,6 @@ EXPECTED_COLS = [
     "Teamnaam","Leden","Fase","Alarm","Score","Last_Update",
     "Start_Lat","Start_Lon","Cur_Lat","Cur_Lon"
 ]
-GPS_UPDATE_INTERVAL = 10  # seconden
 
 # ---------------- DATABASE ----------------
 @st.cache_resource
@@ -109,8 +108,6 @@ if not st.session_state.team:
 # ---------------- ADMIN ----------------
 elif st.session_state.role == "admin":
     st.title("🕹️ Control Room")
-    st_autorefresh(interval=20000, key="adminrefresh")
-
     df = get_df()
 
     # Map met teams
@@ -121,7 +118,6 @@ elif st.session_state.role == "admin":
             folium.Marker([r['Cur_Lat'], r['Cur_Lon']], tooltip=r['Teamnaam']).add_to(m)
     st_folium(m, height=400)
 
-    # Dataframe
     st.dataframe(df[['Teamnaam','Score','Fase','Alarm']], use_container_width=True)
 
     # Opdracht sturen
@@ -156,35 +152,6 @@ else:
         st.rerun()
     my = df[team_idx].iloc[0]
 
-    # GPS update alleen elke 10 seconden
-    if 'last_gps' not in st.session_state:
-        st.session_state['last_gps'] = 0
-
-    if time.time() - st.session_state['last_gps'] >= GPS_UPDATE_INTERVAL:
-        components.html('''
-        <script>
-        navigator.geolocation.getCurrentPosition((pos) => {
-            window.parent.postMessage({type: 'streamlit:setComponentValue', value: {lat: pos.coords.latitude, lon: pos.coords.longitude}}, '*');
-        });
-        </script>
-        ''', height=0)
-        st.session_state['last_gps'] = time.time()
-
-    gps = st.session_state.get('_component_value')
-
-    # Score update
-    if my['Fase'] == 'DROPPING':
-        dt = time.time() - float(my['Last_Update'])
-        df.loc[team_idx, 'Score'] = max(0.0, float(my['Score']) - dt * PUNTEN_PER_SEC)
-        df.loc[team_idx, 'Last_Update'] = time.time()
-
-    # GPS opslaan enkel als coords nieuw
-    if gps and 'lat' in gps and 'lon' in gps:
-        if (my['Cur_Lat'], my['Cur_Lon']) != (gps['lat'], gps['lon']):
-            df.loc[team_idx, ['Cur_Lat','Cur_Lon']] = [gps['lat'], gps['lon']]
-            save_df(df)
-
-    my = df[team_idx].iloc[0]
     st.header(f"🏆 {st.session_state.team} — {int(my['Score'])} punten")
 
     # Alarm tonen
@@ -196,26 +163,29 @@ else:
         else:
             st.warning(f"⌛ Tijd om: {task} | +{pts} pts")
 
-    # Kaart met startlocatie aanwijzen (1 kaart, bolletje direct)
+    # Eén kaart met startlocatie en lijn naar finish
     m = folium.Map(location=FINISH_COORDS, zoom_start=15)
-    out = st_folium(m, height=500, returned_objects=['last_clicked'])
-
-    if out and out.get('last_clicked'):
-        c = out['last_clicked']
-        folium.CircleMarker([c['lat'], c['lng']], radius=7, color='blue').add_to(m)
-        st_folium(m, height=500)
-        if st.button('Bevestig startlocatie'):
-            df.loc[team_idx, ['Start_Lat','Start_Lon','Cur_Lat','Cur_Lon','Fase','Last_Update']] = [c['lat'], c['lng'], c['lat'], c['lng'], 'DROPPING', time.time()]
-            save_df(df)
-            st.rerun()
-
-    # Lijn naar finish
+    folium.Marker(FINISH_COORDS, icon=folium.Icon(color='red'), tooltip='Finish').add_to(m)
     if my['Cur_Lat'] != 0:
-        m2 = folium.Map(location=[my['Cur_Lat'], my['Cur_Lon']], zoom_start=17)
-        folium.PolyLine([[my['Start_Lat'], my['Start_Lon']], FINISH_COORDS], color='green', weight=5).add_to(m2)
-        folium.Marker([my['Cur_Lat'], my['Cur_Lon']], icon=folium.Icon(color='blue')).add_to(m2)
-        folium.Marker(FINISH_COORDS, icon=folium.Icon(color='red')).add_to(m2)
-        st_folium(m2, height=500)
+        folium.Marker([my['Cur_Lat'], my['Cur_Lon']], icon=folium.Icon(color='blue'), tooltip='Laatste GPS').add_to(m)
+        folium.PolyLine([[my['Start_Lat'], my['Start_Lon']], [my['Cur_Lat'], my['Cur_Lon']], FINISH_COORDS], color='green', weight=5).add_to(m)
+    st_folium(m, height=500, key='single_map')
+
+    # Knop om GPS één keer door te geven
+    if st.button("Geef GPS locatie"):
+        components.html('''
+        <script>
+        navigator.geolocation.getCurrentPosition((pos) => {
+            window.parent.postMessage({type:'streamlit:setComponentValue', value:{lat: pos.coords.latitude, lon: pos.coords.longitude}}, '*');
+        });
+        </script>
+        ''', height=0)
+        st.info("GPS locatie doorgegeven (mag een paar seconden duren)")
+
+    gps = st.session_state.get('_component_value')
+    if gps and 'lat' in gps and 'lon' in gps:
+        df.loc[team_idx, ['Cur_Lat','Cur_Lon']] = [gps['lat'], gps['lon']]
+        save_df(df)
 
     if st.button('Logout'):
         st.session_state.clear()
