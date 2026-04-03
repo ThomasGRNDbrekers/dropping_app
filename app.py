@@ -41,12 +41,10 @@ def get_df():
     ws = get_ws()
     if not ws:
         return pd.DataFrame(columns=EXPECTED_COLS)
-
     try:
         data = ws.get_all_records()
     except Exception:
         return pd.DataFrame(columns=EXPECTED_COLS)
-
     df = pd.DataFrame(data) if data else pd.DataFrame(columns=EXPECTED_COLS)
     for c in ['Score','Last_Update','Start_Lat','Start_Lon','Cur_Lat','Cur_Lon']:
         if c in df.columns:
@@ -151,22 +149,6 @@ elif st.session_state.role == "admin":
 
 # ---------------- PLAYER ----------------
 else:
-    last_gps_update = st.session_state.get('last_gps_update', 0)
-    if time.time() - last_gps_update >= GPS_UPDATE_INTERVAL:
-        # GPS via JS component
-        components.html("""
-        <script>
-        function sendPos(pos){
-            const data = {lat: pos.coords.latitude, lon: pos.coords.longitude};
-            window.parent.postMessage({type: 'streamlit:setComponentValue', value: data}, '*');
-        }
-        if(navigator.geolocation){
-            navigator.geolocation.getCurrentPosition(sendPos, function(err){console.log(err);}, {enableHighAccuracy:true});
-        }
-        </script>
-        """, height=0)
-        st.session_state['last_gps_update'] = time.time()
-
     df = get_df()
     team_idx = df['Teamnaam'] == st.session_state.team
     if df[team_idx].empty:
@@ -174,15 +156,29 @@ else:
         st.rerun()
     my = df[team_idx].iloc[0]
 
-    gps = st.session_state.get("_component_value")
+    # GPS update alleen elke 10 seconden
+    if 'last_gps' not in st.session_state:
+        st.session_state['last_gps'] = 0
+
+    if time.time() - st.session_state['last_gps'] >= GPS_UPDATE_INTERVAL:
+        components.html('''
+        <script>
+        navigator.geolocation.getCurrentPosition((pos) => {
+            window.parent.postMessage({type: 'streamlit:setComponentValue', value: {lat: pos.coords.latitude, lon: pos.coords.longitude}}, '*');
+        });
+        </script>
+        ''', height=0)
+        st.session_state['last_gps'] = time.time()
+
+    gps = st.session_state.get('_component_value')
 
     # Score update
-    if my['Fase'] == "DROPPING":
+    if my['Fase'] == 'DROPPING':
         dt = time.time() - float(my['Last_Update'])
         df.loc[team_idx, 'Score'] = max(0.0, float(my['Score']) - dt * PUNTEN_PER_SEC)
         df.loc[team_idx, 'Last_Update'] = time.time()
 
-    # GPS update enkel als nieuwe locatie
+    # GPS opslaan enkel als coords nieuw
     if gps and 'lat' in gps and 'lon' in gps:
         if (my['Cur_Lat'], my['Cur_Lon']) != (gps['lat'], gps['lon']):
             df.loc[team_idx, ['Cur_Lat','Cur_Lon']] = [gps['lat'], gps['lon']]
@@ -200,20 +196,16 @@ else:
         else:
             st.warning(f"⌛ Tijd om: {task} | +{pts} pts")
 
-    # FASE
-    st.info("Klik startlocatie op de kaart")
+    # Kaart met startlocatie aanwijzen (1 kaart, bolletje direct)
     m = folium.Map(location=FINISH_COORDS, zoom_start=15)
-    out = st_folium(m, height=400, returned_objects=['last_clicked'])
+    out = st_folium(m, height=500, returned_objects=['last_clicked'])
 
-    # Toon bolletje direct bij klikken
     if out and out.get('last_clicked'):
         c = out['last_clicked']
         folium.CircleMarker([c['lat'], c['lng']], radius=7, color='blue').add_to(m)
-        st_folium(m, height=400)
-
-        if st.button("Bevestig startlocatie"):
-            df.loc[team_idx, ['Start_Lat','Start_Lon','Cur_Lat','Cur_Lon','Fase','Last_Update']] = [
-                c['lat'], c['lng'], c['lat'], c['lng'], 'DROPPING', time.time()]
+        st_folium(m, height=500)
+        if st.button('Bevestig startlocatie'):
+            df.loc[team_idx, ['Start_Lat','Start_Lon','Cur_Lat','Cur_Lon','Fase','Last_Update']] = [c['lat'], c['lng'], c['lat'], c['lng'], 'DROPPING', time.time()]
             save_df(df)
             st.rerun()
 
@@ -225,7 +217,7 @@ else:
         folium.Marker(FINISH_COORDS, icon=folium.Icon(color='red')).add_to(m2)
         st_folium(m2, height=500)
 
-    if st.button("Logout"):
+    if st.button('Logout'):
         st.session_state.clear()
         st.query_params.clear()
         st.rerun()
