@@ -124,20 +124,22 @@ elif st.session_state.role == "admin":
 else:
     st_autorefresh(interval=3000, key="playerrefresh")
 
-    # 🔥 REALTIME GPS VIA JS
+    # 🔥 REALTIME GPS VIA JS (met fallback + debug)
     components.html("""
     <script>
+    function sendPos(pos){
+        const data = {
+            lat: pos.coords.latitude,
+            lon: pos.coords.longitude
+        };
+        window.parent.postMessage({
+            type: 'streamlit:setComponentValue',
+            value: data
+        }, '*');
+    }
+
     if (navigator.geolocation) {
-        navigator.geolocation.watchPosition(function(pos) {
-            window.parent.postMessage({
-                type: 'streamlit:set_component_value',
-                value: {
-                    lat: pos.coords.latitude,
-                    lon: pos.coords.longitude
-                },
-                key: 'gps'
-            }, '*');
-        }, function(err) {
+        navigator.geolocation.watchPosition(sendPos, function(err){
             console.log(err);
         }, {
             enableHighAccuracy: true,
@@ -147,6 +149,13 @@ else:
     }
     </script>
     """, height=0)
+
+    gps = st.session_state.get("_component_value")
+
+    st.write("GPS debug:", gps)
+
+    if not gps:
+        st.warning("⚠️ Geen live GPS — probeer bewegen of refresh")
 
     df = get_df()
     team_idx = df['Teamnaam'] == st.session_state.team
@@ -160,8 +169,8 @@ else:
         df.loc[team_idx, 'Score'] = max(0.0, float(my['Score']) - dt * PUNTEN_PER_SEC)
         df.loc[team_idx, 'Last_Update'] = time.time()
 
-    # GPS update
-    if gps:
+        # GPS update
+    if gps and isinstance(gps, dict) and 'lat' in gps:
         df.loc[team_idx, ['Cur_Lat','Cur_Lon']] = [gps['lat'], gps['lon']]
 
     save_df(df)
@@ -184,8 +193,16 @@ else:
                 st.rerun()
     else:
         m = folium.Map(location=[my['Cur_Lat'], my['Cur_Lon']], zoom_start=17)
+
+        # 🔥 lijn terug toegevoegd
+        folium.PolyLine([
+            [my['Start_Lat'], my['Start_Lon']],
+            FINISH_COORDS
+        ], color="green", weight=5).add_to(m)
+
         folium.Marker([my['Cur_Lat'], my['Cur_Lon']], icon=folium.Icon(color='blue')).add_to(m)
         folium.Marker(FINISH_COORDS, icon=folium.Icon(color='red')).add_to(m)
+
         st_folium(m, height=500)
 
     if st.button("Logout"):
