@@ -124,7 +124,7 @@ elif st.session_state.role == "admin":
 else:
     st_autorefresh(interval=3000, key="playerrefresh")
 
-    # 🔥 REALTIME GPS VIA JS (met fallback + debug)
+    # 🔥 REALTIME GPS VIA JS
     components.html("""
     <script>
     function sendPos(pos){
@@ -150,27 +150,27 @@ else:
     </script>
     """, height=0)
 
+    df = get_df()
+    team_idx = df['Teamnaam'] == st.session_state.team
+
+    if df[team_idx].empty:
+        st.warning("⚠️ Team data niet gevonden, herladen...")
+        st.rerun()
+
+    my = df[team_idx].iloc[0]
+
     gps = st.session_state.get("_component_value")
 
     st.write("GPS debug:", gps)
 
-    if not gps:
-        st.warning("⚠️ Geen live GPS — probeer bewegen of refresh")
-
-    df = get_df()
-    team_idx = df['Teamnaam'] == st.session_state.team
-    my = df[team_idx].iloc[0]
-
-    gps = st.session_state.get("gps")
-
-    # Score update
+    # Score update (altijd veilig)
     if my['Fase'] == "DROPPING":
         dt = time.time() - float(my['Last_Update'])
         df.loc[team_idx, 'Score'] = max(0.0, float(my['Score']) - dt * PUNTEN_PER_SEC)
         df.loc[team_idx, 'Last_Update'] = time.time()
 
-        # GPS update
-    if gps and isinstance(gps, dict) and 'lat' in gps:
+    # GPS update (veilig)
+    if gps and isinstance(gps, dict) and 'lat' in gps and 'lon' in gps:
         df.loc[team_idx, ['Cur_Lat','Cur_Lon']] = [gps['lat'], gps['lon']]
 
     save_df(df)
@@ -178,6 +178,7 @@ else:
 
     st.header(f"🏆 {st.session_state.team} — {int(my['Score'])} punten")
 
+    # FASE
     if my['Fase'] == "LOCATIE_KIEZEN":
         st.info("Klik startlocatie")
         m = folium.Map(location=FINISH_COORDS, zoom_start=15)
@@ -192,9 +193,17 @@ else:
                 save_df(df)
                 st.rerun()
     else:
+        # veilige distance
+        if my['Cur_Lat'] != 0 and my['Start_Lat'] != 0:
+            dist = math.sqrt(
+                (my['Cur_Lat']-my['Start_Lat'])**2 +
+                (my['Cur_Lon']-my['Start_Lon'])**2
+            ) * 111000
+        else:
+            dist = 0
+
         m = folium.Map(location=[my['Cur_Lat'], my['Cur_Lon']], zoom_start=17)
 
-        # 🔥 lijn terug toegevoegd
         folium.PolyLine([
             [my['Start_Lat'], my['Start_Lon']],
             FINISH_COORDS
